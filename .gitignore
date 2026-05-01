@@ -4,3 +4,4 @@ errorHistory.db
 dist/
 out/
 *.log
+.claude/
