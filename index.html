@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevMonitor</title>
+  <link rel="stylesheet" href="./node_modules/xterm/css/xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Top Bar -->
+  <div id="topbar">
+    <div class="topbar-left">
+      <span class="app-name">DevMonitor</span>
+      <span id="connection-status" class="status-dot disconnected"></span>
+      <span id="connection-text">끊김</span>
+    </div>
+    <div class="topbar-center">
+      <div class="mode-toggle">
+        <button id="mode-a" class="mode-btn active">A</button>
+        <button id="mode-b" class="mode-btn">B</button>
+      </div>
+      <button id="action-btn" class="action-btn">붙여넣기</button>
+    </div>
+    <div class="topbar-right">
+      <button id="notification-toggle" class="icon-btn" title="알림 ON/OFF">🔔</button>
+      <button id="settings-btn" class="icon-btn" title="설정">⚙️</button>
+    </div>
+  </div>
+
+  <!-- Main Container -->
+  <div id="main-container">
+    <!-- Left Column -->
+    <div id="left-column">
+      <div id="sector1" class="sector">
+        <div class="sector-header">Claude Code</div>
+        <div id="terminal1" class="terminal-container"></div>
+      </div>
+      <div id="error-panel" class="sector">
+        <div class="sector-header">에러 분석 로그</div>
+        <div id="error-list"></div>
+      </div>
+    </div>
+
+    <!-- Right Column -->
+    <div id="right-column">
+      <div id="sector2" class="sector">
+        <div class="sector-header single-fallback hidden" id="sector2-header-single">서버 로그</div>
+        <div class="sector-header-tabs" id="sector2-header-tabs">
+          <div class="tab-bar" id="log-tab-bar"></div>
+        </div>
+        <div id="tab-add-form" class="tab-add-form">
+          <div class="tab-form-inner">
+            <div class="tab-form-title">서버 추가</div>
+            <div class="tab-form-row">
+              <label>ID</label>
+              <input type="text" id="tab-srv-id" placeholder="backend">
+            </div>
+            <div class="tab-form-row">
+              <label>이름</label>
+              <input type="text" id="tab-srv-name" placeholder="백엔드">
+            </div>
+            <div class="tab-form-row">
+              <label>PEM 경로</label>
+              <input type="text" id="tab-srv-pem" placeholder="C:/Users/.../server.pem">
+            </div>
+            <div class="tab-form-row">
+              <label>EC2 IP</label>
+              <input type="text" id="tab-srv-ip" placeholder="13.125.xxx.xxx">
+            </div>
+            <div class="tab-form-row">
+              <label>사용자명</label>
+              <input type="text" id="tab-srv-user" placeholder="ec2-user" value="ec2-user">
+            </div>
+            <div class="tab-form-row">
+              <label>포트</label>
+              <input type="number" id="tab-srv-port" placeholder="22" value="22">
+            </div>
+            <div class="tab-form-row">
+              <label>로그 경로</label>
+              <input type="text" id="tab-srv-log" placeholder="/home/ec2-user/app/logs/spring.log">
+            </div>
+            <div class="tab-form-row">
+              <label>로컬 경로</label>
+              <input type="text" id="tab-srv-local" placeholder="C:/Users/.../my-project/backend">
+            </div>
+            <div id="tab-form-errors" class="tab-form-errors"></div>
+            <div class="tab-form-actions">
+              <button id="tab-form-cancel" class="tab-form-btn cancel">취소</button>
+              <button id="tab-form-submit" class="tab-form-btn submit">추가</button>
+            </div>
+          </div>
+        </div>
+        <div id="terminal2" class="terminal-container"></div>
+      </div>
+      <div id="sector3" class="sector">
+        <div class="sector-header single-fallback hidden" id="sector3-header-single">서버 현황</div>
+        <div class="sector-header-tabs" id="sector3-header-tabs">
+          <div class="tab-bar" id="btop-tab-bar"></div>
+        </div>
+        <div id="terminal3" class="terminal-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Popup -->
+  <div id="settings-popup" class="popup hidden">
+    <div class="popup-header">
+      <span>설정</span>
+      <button id="settings-close" class="popup-close">&times;</button>
+    </div>
+    <div class="popup-body">
+      <div class="settings-section-title">서버 목록</div>
+      <div id="server-list"></div>
+      <button id="settings-add-server" class="settings-add-btn">+ 서버 추가 ▼</button>
+      <div id="settings-add-form" class="settings-accordion"></div>
+      <div id="settings-errors" class="settings-errors"></div>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="dist/renderer.js"></script>
+</body>
+</html>
