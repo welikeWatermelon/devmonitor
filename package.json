@@ -1,0 +1,25 @@
+{
+  "name": "devmonitor",
+  "version": "1.0.0",
+  "description": "AWS EC2 서버 모니터링 + Claude Code AI 에러 분석 도구",
+  "main": "main.js",
+  "scripts": {
+    "build": "esbuild renderer.js --bundle --outfile=dist/renderer.js --platform=browser --external:electron",
+    "start": "npm run build && electron .",
+    "rebuild": "electron-rebuild"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "node-pty": "^1.0.0",
+    "ssh2": "^1.15.0",
+    "strip-ansi": "^6.0.1",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-web-links": "^0.9.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.28.0"
+  }
+}
