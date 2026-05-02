@@ -55,6 +55,16 @@ class PtyManager {
       this._handleOutput(data);
     });
 
+    // 타임아웃 폴백: 3초 내 프롬프트 감지 실패 시 강제로 claude 실행
+    this._shellPromptTimeout = setTimeout(() => {
+      if (this.state === STATE.SHELL_STARTING) {
+        console.log('[PTY] 프롬프트 감지 타임아웃, 강제로 claude 실행');
+        this.state = STATE.SHELL_READY;
+        this.outputBuffer = '';
+        this._launchClaude();
+      }
+    }, 3000);
+
     this.process.onExit(({ exitCode }) => {
       console.log('PTY process exited with code:', exitCode);
       onData(`\r\n[DevMonitor] 터미널 프로세스가 종료되었습니다 (코드: ${exitCode})\r\n`);
@@ -72,15 +82,8 @@ class PtyManager {
         if (this._detectShellPrompt()) {
           this.state = STATE.SHELL_READY;
           this.outputBuffer = '';
-          if (this._initialPath) {
-            const cdCmd = process.platform === 'win32'
-              ? `cd /d "${this._initialPath}"\r`
-              : `cd "${this._initialPath}"\n`;
-            this.process.write(cdCmd);
-            setTimeout(() => this._launchClaude(), 500);
-          } else {
-            this._launchClaude();
-          }
+          // cwd로 이미 설정되어 있으므로 cd 불필요, 1.5초 후 claude 실행
+          setTimeout(() => this._launchClaude(), 1500);
         }
         break;
 
@@ -91,19 +94,9 @@ class PtyManager {
         // Waiting for shell prompt after Ctrl+C to exit Claude
         if (this._detectShellPrompt()) {
           this.outputBuffer = '';
-          // Now cd to the new path
-          const pending = this._pendingSwitch;
-          if (pending) {
-            this._pendingSwitch = null;
-            const cdCmd = process.platform === 'win32'
-              ? `cd /d "${pending.localPath}"\r`
-              : `cd "${pending.localPath}"\n`;
-            this.process.write(cdCmd);
-            setTimeout(() => {
-              this._launchClaude();
-              // After claude is ready, inject the error (handled by queue via processQueue)
-            }, 500);
-          }
+          // cd 불필요 — 항상 project_path에서 실행
+          this._pendingSwitch = null;
+          setTimeout(() => this._launchClaude(), 500);
         }
         break;
 
@@ -136,11 +129,26 @@ class PtyManager {
   }
 
   _detectShellPrompt() {
-    const lines = this.outputBuffer.split('\n');
-    const lastLine = lines[lines.length - 1].trim();
+    // ANSI 이스케이프 코드 제거
+    const clean = this.outputBuffer.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+    const lines = clean.split('\n');
+
     if (process.platform === 'win32') {
-      return /[A-Za-z]:\\.*>$/.test(lastLine) || lastLine.endsWith('>');
+      // lastLine 검사
+      const lastLine = lines[lines.length - 1].trim();
+      if (/[A-Za-z]:\\.*>/.test(lastLine) || lastLine.endsWith('>')) {
+        return true;
+      }
+      // outputBuffer 전체에서 '>' 포함 줄 검사 (프롬프트가 중간에 있을 수 있음)
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 5); i--) {
+        const l = lines[i].trim();
+        if (/[A-Za-z]:\\.*>/.test(l) || (l.length > 1 && l.endsWith('>'))) {
+          return true;
+        }
+      }
+      return false;
     }
+    const lastLine = lines[lines.length - 1].trim();
     return /[$#]\s*$/.test(lastLine);
   }
 
@@ -153,6 +161,11 @@ class PtyManager {
   }
 
   _launchClaude() {
+    console.log('[PTY] launching claude...');
+    if (this._shellPromptTimeout) {
+      clearTimeout(this._shellPromptTimeout);
+      this._shellPromptTimeout = null;
+    }
     this.state = STATE.CLAUDE_STARTING;
     this.outputBuffer = '';
     const claudeCmd = process.platform === 'win32' ? 'claude\r' : 'claude\n';
@@ -162,6 +175,7 @@ class PtyManager {
       if (this.state === STATE.CLAUDE_STARTING) {
         this.state = STATE.CLAUDE_READY;
         this.outputBuffer = '';
+        this._processQueue();
       }
     }, 10000);
   }
@@ -197,7 +211,7 @@ class PtyManager {
     // Send Ctrl+C twice to exit Claude
     this.state = STATE.SWITCHING;
     this.outputBuffer = '';
-    this._pendingSwitch = { localPath: server.local_path };
+    this._pendingSwitch = true;
     this.process.write('\x03');
     setTimeout(() => {
       if (this.state === STATE.SWITCHING) {
@@ -209,15 +223,8 @@ class PtyManager {
     setTimeout(() => {
       if (this.state === STATE.SWITCHING) {
         this.outputBuffer = '';
-        const pending = this._pendingSwitch;
-        if (pending) {
-          this._pendingSwitch = null;
-          const cdCmd = process.platform === 'win32'
-            ? `cd /d "${pending.localPath}"\r`
-            : `cd "${pending.localPath}"\n`;
-          this.process.write(cdCmd);
-          setTimeout(() => this._launchClaude(), 500);
-        }
+        this._pendingSwitch = null;
+        this._launchClaude();
       }
     }, 5000);
   }
@@ -225,6 +232,14 @@ class PtyManager {
   write(data) {
     if (this.process) {
       this.process.write(data);
+    }
+  }
+
+  injectWithoutEnter(text) {
+    if (this.state === STATE.CLAUDE_READY) {
+      if (this.process) this.process.write(text);
+    } else {
+      this.commandQueue.push({ text, noEnter: true });
     }
   }
 
@@ -257,6 +272,12 @@ class PtyManager {
     if (next.switchTo) {
       this.activeClaudeServerId = next.switchTo.id;
       this._performSwitch(next.switchTo, next.text, next.errorKey);
+      return;
+    }
+
+    // noEnter: 텍스트만 입력, 엔터 없음
+    if (next.noEnter) {
+      if (this.process) this.process.write(next.text);
       return;
     }
 
