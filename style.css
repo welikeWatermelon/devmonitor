@@ -670,6 +670,76 @@ body {
   border-radius: 3px;
 }
 
+/* === Error panel sections === */
+.err-section-title {
+  font-size: 11px; color: #6c7086;
+  padding: 4px 8px; background: #181825;
+  border-bottom: 1px solid #313244;
+  position: sticky; top: 0; z-index: 1;
+}
+.error-group { position: relative; }
+.error-group .err-checkbox {
+  position: absolute; top: 8px; left: 6px;
+  width: 14px; height: 14px; cursor: pointer;
+}
+.error-group .error-key { padding-left: 24px; }
+.error-group.resolved { opacity: 0.5; }
+.resolve-btn, .unresolve-btn {
+  font-size: 11px; padding: 2px 8px;
+  border: none; border-radius: 3px; cursor: pointer; margin-top: 4px;
+}
+.resolve-btn { background: #a6e3a1; color: #1e1e2e; }
+.unresolve-btn { background: #585b70; color: #cdd6f4; }
+
+#err-delete-selected {
+  background: #45475a;
+  color: #cdd6f4;
+  border: 1px solid #585b70;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#err-delete-all {
+  background: #f38ba8;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+/* === Sector 3 subtabs & dashboard === */
+.s3-tab {
+  background: #313244; color: #cdd6f4; border: none;
+  padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.s3-tab.active { background: #89b4fa; color: #1e1e2e; }
+.s3-panel { flex: 1; overflow-y: auto; }
+.s3-panel.hidden { display: none; }
+#dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px; padding: 8px;
+}
+.dash-card {
+  background: #1e1e2e; border: 1px solid #313244; border-radius: 6px;
+  padding: 10px 12px;
+}
+.dash-card .card-title {
+  font-size: 11px; color: #6c7086; margin-bottom: 4px;
+}
+.dash-card .card-value {
+  font-size: 20px; font-weight: bold; color: #cdd6f4;
+}
+.dash-card .card-sub {
+  font-size: 11px; color: #6c7086; margin-top: 2px;
+}
+.dash-card.warn .card-value { color: #f9e2af; }
+.dash-card.alert .card-value { color: #f38ba8; }
+
 /* === xterm overrides === */
 .xterm {
   height: 100%;
