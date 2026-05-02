@@ -69,11 +69,20 @@ class ErrorDB {
       resolve: this.db.prepare(
         'UPDATE error_history SET resolved = 1 WHERE server_id = ? AND error_key = ?'
       ),
+      unresolve: this.db.prepare(
+        'UPDATE error_history SET resolved = 0 WHERE server_id = ? AND error_key = ?'
+      ),
+      deleteOne: this.db.prepare(
+        'DELETE FROM error_history WHERE server_id = ? AND error_key = ?'
+      ),
       getAll: this.db.prepare(
         'SELECT * FROM error_history ORDER BY last_seen DESC'
       ),
       getByServer: this.db.prepare(
         'SELECT * FROM error_history WHERE server_id = ? ORDER BY last_seen DESC'
+      ),
+      getByCompositeKey: this.db.prepare(
+        'SELECT * FROM error_history WHERE server_id = ? AND error_key = ?'
       ),
       getUnresolved: this.db.prepare(
         'SELECT * FROM error_history WHERE resolved = 0 ORDER BY last_seen DESC'
@@ -135,6 +144,46 @@ class ErrorDB {
       console.error('DB getByServer error:', e.message);
       return [];
     }
+  }
+
+  getByCompositeKey(compositeKey) {
+    if (!this.db) return null;
+    try {
+      const parts = compositeKey.split('::');
+      if (parts.length !== 2) return null;
+      const [serverId, errorKey] = parts;
+      return this.stmts.getByCompositeKey.get(serverId, errorKey) || null;
+    } catch (e) {
+      console.error('DB getByCompositeKey error:', e.message);
+      return null;
+    }
+  }
+
+  unresolve(serverId, errorKey) {
+    if (!this.db) return;
+    try { this.stmts.unresolve.run(serverId, errorKey); } catch (e) {}
+  }
+
+  deleteOne(serverId, errorKey) {
+    if (!this.db) return;
+    try { this.stmts.deleteOne.run(serverId, errorKey); } catch (e) {}
+  }
+
+  deleteMany(compositeKeys) {
+    if (!this.db) return;
+    const stmt = this.db.prepare('DELETE FROM error_history WHERE server_id = ? AND error_key = ?');
+    const tx = this.db.transaction((keys) => {
+      for (const key of keys) {
+        const parts = key.split('::');
+        if (parts.length === 2) stmt.run(parts[0], parts[1]);
+      }
+    });
+    try { tx(compositeKeys); } catch (e) {}
+  }
+
+  deleteAll() {
+    if (!this.db) return;
+    try { this.db.exec('DELETE FROM error_history'); } catch (e) {}
   }
 
   close() {
