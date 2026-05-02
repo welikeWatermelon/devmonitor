@@ -32,6 +32,18 @@ class SSHManager {
     return opts;
   }
 
+  _getBtopConnectOptions(server) {
+    const opts = this._getConnectOptions(server);
+    if (server.diag_pem_key_path) {
+      try {
+        opts.privateKey = fs.readFileSync(server.diag_pem_key_path);
+      } catch (e) {
+        console.error(`[${server.id}] 진단 PEM 읽기 실패:`, e.message);
+      }
+    }
+    return opts;
+  }
+
   _getOrCreateEntry(serverId) {
     if (!this.connections.has(serverId)) {
       this.connections.set(serverId, {
@@ -119,7 +131,7 @@ class SSHManager {
       entry.backoff.log = 1000;
       cb.onStatus(server.id, 'log', 'connected');
 
-      const cmd = `tail -F ${server.log_path} 2>&1 | grep --line-buffered -E "ERROR|WARN"`;
+      const cmd = `tail -F ${server.log_path} 2>&1`;
 
       entry.logConn.exec(cmd, (err, stream) => {
         if (err) {
@@ -217,7 +229,7 @@ class SSHManager {
       entry.backoff.btop = 1000;
       cb.onStatus(server.id, 'btop', 'connected');
 
-      entry.btopConn.shell({ term: 'xterm-256color', cols: 120, rows: 30 }, (err, stream) => {
+      entry.btopConn.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, stream) => {
         if (err) {
           console.error(`[${server.id}] btop shell error:`, err.message);
           entry.status.btop = 'error';
@@ -247,6 +259,13 @@ class SSHManager {
         });
 
         stream.write('btop\n');
+
+        // btop이 실제로 시작된 후 renderer에 알려서 실제 xterm 크기로 resize할 수 있게 함
+        setTimeout(() => {
+          if (entry.btopStream && !this.disposed) {
+            cb.onStatus(server.id, 'btop', 'btop-ready');
+          }
+        }, 600);
       });
     });
 
@@ -266,7 +285,7 @@ class SSHManager {
     });
 
     try {
-      entry.btopConn.connect(this._getConnectOptions(server));
+      entry.btopConn.connect(this._getBtopConnectOptions(server));
     } catch (e) {
       console.error(`[${server.id}] SSH btop connect error:`, e.message);
       entry.status.btop = 'error';
@@ -312,6 +331,21 @@ class SSHManager {
     if (entry && entry.btopStream) {
       entry.btopStream.setWindow(rows, cols, 0, 0);
     }
+  }
+
+  diagExec(serverId, command, callback) {
+    const entry = this.connections.get(serverId);
+    if (!entry || !entry.btopConn) {
+      callback(null, '[DevMonitor] 서버에 연결되지 않았습니다.');
+      return;
+    }
+    entry.btopConn.exec(command, (err, stream) => {
+      if (err) { callback(null, err.message); return; }
+      let out = '';
+      stream.on('data', d => out += d.toString('utf8'));
+      stream.stderr.on('data', d => out += d.toString('utf8'));
+      stream.on('close', () => callback(out, null));
+    });
   }
 
   // --- Cleanup ---
