@@ -107,7 +107,7 @@ function initTerminals() {
     const d1 = fit1.proposeDimensions();
     const d3 = fit3.proposeDimensions();
     if (d1) window.devmonitor.resizePty(d1.cols, d1.rows);
-    if (d3 && activeServerId) window.devmonitor.resizeSshBtop(activeServerId, d3.cols, d3.rows);
+    if (d3 && d3.cols >= 80 && d3.rows >= 24 && activeServerId) window.devmonitor.resizeSshBtop(activeServerId, d3.cols, d3.rows);
   };
 
   window.addEventListener('resize', doFit);
@@ -115,6 +115,14 @@ function initTerminals() {
   ro.observe(document.getElementById('terminal1'));
   ro.observe(document.getElementById('terminal2'));
   ro.observe(document.getElementById('terminal3'));
+
+  // 대시보드 30초 자동 갱신
+  setInterval(() => {
+    const activeS3Tab = document.querySelector('.s3-tab.active');
+    if (activeS3Tab && activeS3Tab.dataset.panel === 'dashboard' && activeServerId) {
+      loadDashboard(activeServerId);
+    }
+  }, 30000);
 }
 
 // --- Tab switching ---
@@ -142,11 +150,25 @@ function switchTab(serverId) {
   // Notify main process
   window.devmonitor.switchTab(serverId);
 
+  // 탭 전환 시 실제 xterm 크기를 btop에 즉시 전송
+  if (fit3) {
+    const d3 = fit3.proposeDimensions();
+    if (d3 && d3.cols >= 80 && d3.rows >= 24) {
+      window.devmonitor.resizeSshBtop(serverId, d3.cols, d3.rows);
+    }
+  }
+
   // Update tab UI
   renderTabs();
 
   // Update top bar connection status
   updateConnectionStatus();
+
+  // 대시보드 탭이 활성 상태면 갱신
+  const activeS3Tab = document.querySelector('.s3-tab.active');
+  if (activeS3Tab && activeS3Tab.dataset.panel === 'dashboard') {
+    loadDashboard(serverId);
+  }
 }
 
 function renderTabs() {
@@ -223,6 +245,17 @@ function updateConnectionStatus() {
 
 // --- SSH Status handler ---
 window.devmonitor.onSshStatus((serverId, sector, status) => {
+  // 'btop-ready': btop이 실제로 시작된 후 실제 xterm 크기로 resize
+  if (status === 'btop-ready') {
+    if (serverId === activeServerId && fit3) {
+      const d3 = fit3.proposeDimensions();
+      if (d3 && d3.cols >= 80 && d3.rows >= 24) {
+        window.devmonitor.resizeSshBtop(serverId, d3.cols, d3.rows);
+      }
+    }
+    return; // serverStatuses에 저장 안 함
+  }
+
   if (!serverStatuses[serverId]) serverStatuses[serverId] = { log: 'disconnected', btop: 'disconnected' };
   serverStatuses[serverId][sector] = status;
   renderTabs();
@@ -248,7 +281,7 @@ function clearTabForm() {
   document.getElementById('tab-srv-user').value = 'ec2-user';
   document.getElementById('tab-srv-port').value = '22';
   document.getElementById('tab-srv-log').value = '';
-  document.getElementById('tab-srv-local').value = '';
+  document.getElementById('tab-srv-diag-pem').value = '';
   document.getElementById('tab-form-errors').textContent = '';
 }
 
@@ -268,7 +301,7 @@ document.getElementById('tab-form-submit').addEventListener('click', async () =>
     username: document.getElementById('tab-srv-user').value.trim(),
     port: parseInt(document.getElementById('tab-srv-port').value, 10) || 22,
     log_path: document.getElementById('tab-srv-log').value.trim(),
-    local_path: document.getElementById('tab-srv-local').value.trim()
+    diag_pem_key_path: document.getElementById('tab-srv-diag-pem').value.trim()
   };
 
   if (!serverData.id || !serverData.name) {
@@ -336,6 +369,61 @@ document.getElementById('settings-btn').addEventListener('click', () => {
   settingsPopup.classList.toggle('hidden');
   if (!settingsPopup.classList.contains('hidden')) {
     renderSettingsServerList();
+    // project_path 초기값 로드
+    window.devmonitor.loadConfig().then(cfg => {
+      if (cfg && cfg.project_path) {
+        document.getElementById('settings-project-path').value = cfg.project_path;
+      }
+    });
+    // 빌드 설정 로드
+    window.devmonitor.getBuildConfig().then(b => {
+      if (b) {
+        document.getElementById('settings-build-command').value = b.command || '';
+        document.getElementById('settings-build-dir').value = b.work_dir || '';
+        document.getElementById('settings-build-jar').value = b.jar_path || '';
+      }
+    });
+    // deny 규칙 상태 표시
+    window.devmonitor.getDenyRulesStatus().then(status => {
+      const el = document.getElementById('deny-rules-status');
+      if (status.installed) {
+        el.textContent = `현재 ${status.count}개 deny 규칙이 설치되어 있습니다.`;
+        el.style.color = '#a6e3a1';
+      } else {
+        el.textContent = '아직 deny 규칙이 설치되지 않았습니다.';
+        el.style.color = '#f9e2af';
+      }
+    });
+  }
+});
+
+document.getElementById('settings-project-path-save').addEventListener('click', async () => {
+  const projectPath = document.getElementById('settings-project-path').value.trim();
+  const result = await window.devmonitor.setProjectPath(projectPath);
+  if (result && result.success) {
+    showToast('프로젝트 경로가 저장되었습니다');
+  }
+});
+
+document.getElementById('install-deny-rules-btn').addEventListener('click', async () => {
+  const result = await window.devmonitor.installDenyRules();
+  if (result && result.success) {
+    showToast(`안전 규칙 ${result.count}개가 설치되었습니다`);
+    const el = document.getElementById('deny-rules-status');
+    el.textContent = `현재 ${result.count}개 deny 규칙이 설치되어 있습니다.`;
+    el.style.color = '#a6e3a1';
+  }
+});
+
+document.getElementById('settings-build-save').addEventListener('click', async () => {
+  const buildCfg = {
+    command: document.getElementById('settings-build-command').value.trim(),
+    work_dir: document.getElementById('settings-build-dir').value.trim(),
+    jar_path: document.getElementById('settings-build-jar').value.trim()
+  };
+  const result = await window.devmonitor.saveBuildConfig(buildCfg);
+  if (result && result.success) {
+    showToast('빌드 설정이 저장되었습니다');
   }
 });
 
@@ -422,7 +510,7 @@ function buildServerFormHTML(prefix, mode, server) {
       <div class="tab-form-row"><label>사용자명</label><input type="text" id="${prefix}-f-user" value="${escapeHtml(s.username || 'ec2-user')}"></div>
       <div class="tab-form-row"><label>포트</label><input type="number" id="${prefix}-f-port" value="${s.port || 22}"></div>
       <div class="tab-form-row"><label>로그 경로</label><input type="text" id="${prefix}-f-log" value="${escapeHtml(s.log_path || '')}"></div>
-      <div class="tab-form-row"><label>로컬 경로</label><input type="text" id="${prefix}-f-local" value="${escapeHtml(s.local_path || '')}"></div>
+      <div class="tab-form-row"><label>진단 키 경로 (선택)</label><input type="text" id="${prefix}-f-diag-pem" value="${escapeHtml(s.diag_pem_key_path || '')}" placeholder="ForceCommand 전용 PEM (없으면 기본 키 사용)"></div>
       <div id="${prefix}-f-errors" class="tab-form-errors"></div>
       <div class="tab-form-actions">
         <button id="${prefix}-f-cancel" class="tab-form-btn cancel">취소</button>
@@ -441,48 +529,66 @@ function attachSettingsFormHandlers(mode, editId) {
   });
 
   document.getElementById(`${prefix}-f-submit`).addEventListener('click', async () => {
-    const serverData = {
-      id: document.getElementById(`${prefix}-f-id`).value.trim(),
-      name: document.getElementById(`${prefix}-f-name`).value.trim(),
-      pem_key_path: document.getElementById(`${prefix}-f-pem`).value.trim(),
-      ec2_ip: document.getElementById(`${prefix}-f-ip`).value.trim(),
-      username: document.getElementById(`${prefix}-f-user`).value.trim(),
-      port: parseInt(document.getElementById(`${prefix}-f-port`).value, 10) || 22,
-      log_path: document.getElementById(`${prefix}-f-log`).value.trim(),
-      local_path: document.getElementById(`${prefix}-f-local`).value.trim()
-    };
+    const errorsDiv = document.getElementById(`${prefix}-f-errors`);
+    errorsDiv.textContent = '';
+    errorsDiv.style.color = '#f38ba8';
+    errorsDiv.style.marginTop = '8px';
 
-    if (!serverData.id || !serverData.name) {
-      document.getElementById(`${prefix}-f-errors`).textContent = 'ID와 이름은 필수입니다';
-      return;
-    }
+    try {
+      const serverData = {
+        id: document.getElementById(`${prefix}-f-id`).value.trim(),
+        name: document.getElementById(`${prefix}-f-name`).value.trim(),
+        pem_key_path: document.getElementById(`${prefix}-f-pem`).value.trim(),
+        ec2_ip: document.getElementById(`${prefix}-f-ip`).value.trim(),
+        username: document.getElementById(`${prefix}-f-user`).value.trim(),
+        port: parseInt(document.getElementById(`${prefix}-f-port`).value, 10) || 22,
+        log_path: document.getElementById(`${prefix}-f-log`).value.trim(),
+        diag_pem_key_path: document.getElementById(`${prefix}-f-diag-pem`).value.trim()
+      };
 
-    let result;
-    if (mode === 'edit') {
-      result = await window.devmonitor.updateServer(serverData);
-    } else {
-      result = await window.devmonitor.addServer(serverData);
-    }
-
-    if (result.success) {
-      servers = result.servers;
-      if (!activeServerId && servers.length > 0) {
-        activeServerId = servers[0].id;
+      if (!serverData.id || !serverData.name) {
+        errorsDiv.textContent = 'ID와 이름은 필수입니다';
+        return;
       }
-      document.getElementById('settings-add-form').classList.remove('open');
-      document.getElementById('settings-add-server').textContent = '+ 서버 추가 ▼';
-      renderTabs();
-      renderSettingsServerList();
-      showToast(mode === 'edit' ? '서버가 수정되었습니다' : '서버가 추가되었습니다');
-    } else {
-      document.getElementById(`${prefix}-f-errors`).textContent = result.errors.join(', ');
+
+      let result;
+      if (mode === 'edit') {
+        result = await window.devmonitor.updateServer(serverData);
+      } else {
+        result = await window.devmonitor.addServer(serverData);
+      }
+
+      if (!result) {
+        console.error('[Settings] 서버 추가/수정 결과가 없습니다 (result is null/undefined)');
+        errorsDiv.textContent = '서버 추가에 실패했습니다. 응답이 없습니다.';
+        return;
+      }
+
+      if (result.success) {
+        console.log(`[Settings] 서버 ${mode === 'edit' ? '수정' : '추가'} 성공:`, serverData.id);
+        servers = result.servers;
+        if (!activeServerId && servers.length > 0) {
+          activeServerId = servers[0].id;
+        }
+        document.getElementById('settings-add-form').classList.remove('open');
+        document.getElementById('settings-add-server').textContent = '+ 서버 추가 ▼';
+        renderTabs();
+        renderSettingsServerList();
+        showToast(mode === 'edit' ? '서버가 수정되었습니다' : '서버가 추가되었습니다');
+      } else {
+        console.error(`[Settings] 서버 ${mode === 'edit' ? '수정' : '추가'} 실패:`, result.errors);
+        errorsDiv.textContent = (result.errors || ['알 수 없는 오류']).join(', ');
+      }
+    } catch (err) {
+      console.error('[Settings] 서버 추가/수정 중 예외 발생:', err);
+      errorsDiv.textContent = '오류: ' + (err.message || '알 수 없는 오류가 발생했습니다');
     }
   });
 }
 
 // --- Error Panel ---
-const errorList = document.getElementById('error-list');
 const errorElements = new Map();
+const checkedKeys = new Set();
 
 window.devmonitor.onErrorDetected(({ key, group }) => {
   addErrorToPanel(key, group);
@@ -536,26 +642,70 @@ function addErrorToPanel(key, group) {
   }).join('');
 
   const serverLabel = group.serverName
-    ? `<div class="error-server-label">${escapeHtml(group.serverName)}</div>`
-    : '';
+    ? `<div class="error-server-label">${escapeHtml(group.serverName)}</div>` : '';
 
   div.innerHTML = `
+    <input type="checkbox" class="err-checkbox" data-key="${escapeHtml(key)}">
     ${serverLabel}
     <div class="error-key">${escapeHtml(group.errorType || '')} @ ${escapeHtml((group.file || '') + ':' + (group.line || ''))}</div>
     <div class="error-timestamps">${timestamps}</div>
     <div class="error-count">발생 횟수: ${group.count || 1}</div>
     <div class="error-analysis ${group.analysis ? 'has-content' : ''}">${escapeHtml(group.analysis || '')}</div>
-    <button class="resolve-btn">해결하기</button>
+    <div class="err-actions">
+      ${group.resolved
+        ? '<button class="unresolve-btn">\u21A9 미해결로</button>'
+        : '<button class="resolve-btn">\u2705 해결완료</button>'}
+    </div>
   `;
 
-  div.querySelector('.resolve-btn').addEventListener('click', () => {
-    window.devmonitor.resolveError(key);
-    div.classList.add('resolved');
-    showToast('VSCode에서 파일을 엽니다...');
+  div.querySelector('.err-checkbox').addEventListener('change', (e) => {
+    if (e.target.checked) checkedKeys.add(key);
+    else checkedKeys.delete(key);
   });
 
-  errorList.prepend(div);
+  const resolveBtn = div.querySelector('.resolve-btn');
+  const unresolveBtn = div.querySelector('.unresolve-btn');
+  if (resolveBtn) {
+    resolveBtn.addEventListener('click', () => {
+      window.devmonitor.resolveError(key);
+      moveToResolved(key, div);
+    });
+  }
+  if (unresolveBtn) {
+    unresolveBtn.addEventListener('click', () => {
+      window.devmonitor.unresolveError(key);
+      moveToUnresolved(key, div);
+    });
+  }
+
+  if (group.resolved) {
+    document.getElementById('error-list-resolved').prepend(div);
+  } else {
+    document.getElementById('error-list-unresolved').prepend(div);
+  }
   errorElements.set(key, div);
+}
+
+function moveToResolved(key, div) {
+  div.classList.add('resolved');
+  const actions = div.querySelector('.err-actions');
+  actions.innerHTML = '<button class="unresolve-btn">\u21A9 미해결로</button>';
+  actions.querySelector('.unresolve-btn').addEventListener('click', () => {
+    window.devmonitor.unresolveError(key);
+    moveToUnresolved(key, div);
+  });
+  document.getElementById('error-list-resolved').prepend(div);
+}
+
+function moveToUnresolved(key, div) {
+  div.classList.remove('resolved');
+  const actions = div.querySelector('.err-actions');
+  actions.innerHTML = '<button class="resolve-btn">\u2705 해결완료</button>';
+  actions.querySelector('.resolve-btn').addEventListener('click', () => {
+    window.devmonitor.resolveError(key);
+    moveToResolved(key, div);
+  });
+  document.getElementById('error-list-unresolved').prepend(div);
 }
 
 function updateErrorInPanel(key, group) {
@@ -571,6 +721,27 @@ function updateErrorInPanel(key, group) {
   el.querySelector('.error-count').textContent = `발생 횟수: ${group.count || 1}`;
 }
 
+document.getElementById('err-delete-selected').addEventListener('click', () => {
+  if (checkedKeys.size === 0) { showToast('선택된 에러가 없습니다'); return; }
+  const keys = [...checkedKeys];
+  window.devmonitor.deleteErrors(keys);
+  keys.forEach(key => {
+    const el = errorElements.get(key);
+    if (el) el.remove();
+    errorElements.delete(key);
+    checkedKeys.delete(key);
+  });
+  showToast(`${keys.length}개 삭제됨`);
+});
+
+document.getElementById('err-delete-all').addEventListener('click', () => {
+  window.devmonitor.deleteErrors('ALL');
+  errorElements.forEach(el => el.remove());
+  errorElements.clear();
+  checkedKeys.clear();
+  showToast('전체 삭제됨');
+});
+
 // --- Toast ---
 function showToast(message, duration = 3000) {
   const toast = document.getElementById('toast');
@@ -579,12 +750,10 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.add('hidden'), duration);
 }
 
-// --- Clipboard copy notification ---
 window.devmonitor.onClipboardCopy(() => {
   showToast('에러가 클립보드에 복사되었습니다');
 });
 
-// --- App status ---
 window.devmonitor.onAppStatus(({ type, message }) => {
   if (message === 'config-missing') {
     settingsPopup.classList.remove('hidden');
@@ -594,7 +763,6 @@ window.devmonitor.onAppStatus(({ type, message }) => {
   }
 });
 
-// --- Servers init (from main process) ---
 window.devmonitor.onServersInit((srvList) => {
   servers = srvList;
   if (servers.length > 0 && !activeServerId) {
@@ -604,11 +772,115 @@ window.devmonitor.onServersInit((srvList) => {
   updateConnectionStatus();
 });
 
-// --- Utility ---
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// --- Build ---
+document.getElementById('build-btn').addEventListener('click', () => {
+  const btn = document.getElementById('build-btn');
+  if (btn.disabled) return;
+  window.devmonitor.startBuild();
+});
+
+window.devmonitor.onBuildLog((data) => {
+  if (term1) term1.write(data);
+});
+
+window.devmonitor.onBuildStatus((status) => {
+  const btn = document.getElementById('build-btn');
+  if (status === 'running') {
+    btn.textContent = '\u23F3 빌드 중...';
+    btn.disabled = true;
+  } else if (status === 'success') {
+    btn.textContent = '\u2705 빌드 완료';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = '\uD83D\uDD28 빌드'; }, 3000);
+  } else if (status === 'failed') {
+    btn.textContent = '\u274C 빌드 실패';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = '\uD83D\uDD28 빌드'; }, 3000);
+  }
+});
+
+// --- Sector 3 Dashboard ---
+document.querySelectorAll('.s3-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.s3-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const panel = btn.dataset.panel;
+    document.getElementById('panel-dashboard').classList.toggle('hidden', panel !== 'dashboard');
+    document.getElementById('panel-btop').classList.toggle('hidden', panel !== 'btop');
+    if (panel === 'dashboard' && activeServerId) loadDashboard(activeServerId);
+    if (panel === 'btop' && fit3) {
+      requestAnimationFrame(() => fit3.fit());
+    }
+  });
+});
+
+document.getElementById('dashboard-refresh').addEventListener('click', () => {
+  if (activeServerId) loadDashboard(activeServerId);
+});
+
+async function loadDashboard(serverId) {
+  const grid = document.getElementById('dashboard-grid');
+  grid.innerHTML = '<div style="color:#6c7086;padding:16px;">수집 중...</div>';
+
+  const [memRes, dfRes, loadRes] = await Promise.all([
+    window.devmonitor.diagExec(serverId, 'free -m'),
+    window.devmonitor.diagExec(serverId, 'df -h /'),
+    window.devmonitor.diagExec(serverId, 'cat /proc/loadavg')
+  ]);
+
+  // free -m 파싱
+  let memUsed = '--', memTotal = '--', memPct = 0;
+  const memLine = memRes.output.split('\n').find(l => l.startsWith('Mem:'));
+  if (memLine) {
+    const parts = memLine.trim().split(/\s+/);
+    memTotal = parts[1]; memUsed = parts[2];
+    memPct = Math.round((+parts[2] / +parts[1]) * 100);
+  }
+
+  // df -h 파싱
+  let diskUsed = '--', diskTotal = '--', diskPct = '--';
+  const dfLine = dfRes.output.split('\n').find(l => l.includes('/') && !l.startsWith('Filesystem'));
+  if (dfLine) {
+    const p = dfLine.trim().split(/\s+/);
+    diskTotal = p[1]; diskUsed = p[2]; diskPct = p[4];
+  }
+
+  // loadavg 파싱
+  const loadParts = loadRes.output.trim().split(' ');
+  const load1 = loadParts[0] || '--';
+  const load5 = loadParts[1] || '--';
+
+  // 24h 에러 건수
+  const errCnt = getTodayErrorCount(serverId);
+
+  grid.innerHTML = `
+    ${dashCard('Load Avg (1m)', load1, '5m: ' + load5, +load1 > 2 ? 'warn' : '')}
+    ${dashCard('Memory', memPct + '%', memUsed + 'M / ' + memTotal + 'M used', memPct > 80 ? 'warn' : '')}
+    ${dashCard('Disk /', diskPct, diskUsed + ' / ' + diskTotal, parseInt(diskPct) > 80 ? 'warn' : '')}
+    ${dashCard('24h ERROR', errCnt + '건', '에러 분석 로그 기준', errCnt > 0 ? 'alert' : '')}
+  `;
+}
+
+function dashCard(title, value, sub, cls) {
+  return `<div class="dash-card ${cls || ''}">
+    <div class="card-title">${title}</div>
+    <div class="card-value">${value}</div>
+    <div class="card-sub">${sub}</div>
+  </div>`;
+}
+
+function getTodayErrorCount(serverId) {
+  let count = 0;
+  errorElements.forEach((el, key) => {
+    if (key.startsWith(serverId + '::')) count++;
+  });
+  return count;
 }
 
 // --- Init ---
