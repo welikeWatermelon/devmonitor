@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('devmonitor', {
   // Config
   loadConfig: () => ipcRenderer.invoke('config:load'),
   saveConfig: (cfg) => ipcRenderer.invoke('config:save', cfg),
+  setProjectPath: (path) => ipcRenderer.invoke('config:set-project-path', path),
 
   // Server CRUD
   addServer: (server) => ipcRenderer.invoke('server:add', server),
@@ -45,9 +46,25 @@ contextBridge.exposeInMainWorld('devmonitor', {
   getErrorHistory: () => ipcRenderer.invoke('error:get-history'),
   onErrorHistory: (cb) => ipcRenderer.on('error:history', (_, data) => cb(data)),
   resolveError: (key) => ipcRenderer.send('error:resolve', key),
+  unresolveError: (key) => ipcRenderer.send('error:unresolve', key),
+  deleteErrors: (keys) => ipcRenderer.send('error:delete', keys),
 
   // Clipboard copy notification
   onClipboardCopy: (cb) => ipcRenderer.on('clipboard:copy', (_, key) => cb(key)),
+
+  // Diagnostics
+  diagExec: (serverId, command) => ipcRenderer.invoke('diag:exec', { serverId, command }),
+
+  // Build
+  getBuildConfig: () => ipcRenderer.invoke('build:get-config'),
+  saveBuildConfig: (cfg) => ipcRenderer.invoke('build:save-config', cfg),
+  startBuild: () => ipcRenderer.send('build:start'),
+  onBuildLog: (cb) => ipcRenderer.on('build:log', (_, data) => cb(data)),
+  onBuildStatus: (cb) => ipcRenderer.on('build:status', (_, status) => cb(status)),
+
+  // Safety
+  installDenyRules: () => ipcRenderer.invoke('safety:install-deny-rules'),
+  getDenyRulesStatus: () => ipcRenderer.invoke('safety:get-deny-rules-status'),
 
   // App status
   onAppStatus: (cb) => ipcRenderer.on('app:status', (_, data) => cb(data))
