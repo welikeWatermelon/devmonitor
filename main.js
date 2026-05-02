@@ -48,7 +48,7 @@ function loadConfig() {
   } catch (e) {
     console.error('Config load error:', e.message);
   }
-  return null;
+  return { servers: [] };
 }
 
 function migrateConfig(cfg) {
@@ -61,22 +61,43 @@ function migrateConfig(cfg) {
       ec2_ip: cfg.ec2_ip,
       username: cfg.username || 'ec2-user',
       port: cfg.port || 22,
-      log_path: cfg.log_path || '',
-      local_path: cfg.project_path || ''
+      log_path: cfg.log_path || ''
     }];
+    // project_path를 최상위로 이전
+    if (!cfg.project_path) {
+      cfg.project_path = cfg.project_path || '';
+    }
     delete cfg.pem_key_path;
     delete cfg.ec2_ip;
     delete cfg.username;
     delete cfg.port;
     delete cfg.log_path;
-    delete cfg.project_path;
-    // Save migrated config
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
   }
 
   // Ensure servers array exists
   if (!cfg.servers) {
     cfg.servers = [];
+  }
+
+  // Migrate: servers[].local_path → top-level project_path
+  if (!cfg.project_path) {
+    const firstWithPath = cfg.servers.find(s => s.local_path);
+    cfg.project_path = firstWithPath ? firstWithPath.local_path : '';
+  }
+  // Remove local_path from all servers
+  for (const s of cfg.servers) {
+    delete s.local_path;
+  }
+
+  // Ensure project_path exists
+  if (!cfg.project_path) {
+    cfg.project_path = '';
+  }
+
+  // Ensure build config exists
+  if (!cfg.build) {
+    cfg.build = { command: '', work_dir: '', jar_path: '' };
   }
 
   return cfg;
@@ -98,17 +119,101 @@ function validateServer(server) {
   if (server.pem_key_path && !fs.existsSync(server.pem_key_path)) {
     errors.push('PEM 파일이 존재하지 않습니다: ' + server.pem_key_path);
   }
+  if (server.diag_pem_key_path && !fs.existsSync(server.diag_pem_key_path)) {
+    errors.push('진단 PEM 파일이 존재하지 않습니다: ' + server.diag_pem_key_path);
+  }
   if (server.ec2_ip && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(server.ec2_ip)) {
     errors.push('EC2 IP 형식이 올바르지 않습니다');
-  }
-  if (server.local_path && !fs.existsSync(server.local_path)) {
-    errors.push('로컬 경로가 존재하지 않습니다: ' + server.local_path);
   }
   const port = parseInt(server.port, 10);
   if (isNaN(port) || port < 1 || port > 65535) {
     errors.push('포트 번호가 올바르지 않습니다 (1-65535)');
   }
   return errors;
+}
+
+// --- Helper: find file recursively ---
+function findFileRecursive(dir, fileName) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip node_modules, .git, build dirs
+        if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'target' || entry.name === 'build') continue;
+        const found = findFileRecursive(fullPath, fileName);
+        if (found) return found;
+      } else if (entry.name === fileName) {
+        return fullPath;
+      }
+    }
+  } catch (e) {
+    // Permission error or deleted dir
+  }
+  return null;
+}
+
+// --- Helper: get VSCode command path ---
+function getVSCodeCommand() {
+  const vscodePath = 'C:\\Users\\bill5\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code';
+  if (process.platform === 'win32' && fs.existsSync(vscodePath)) {
+    return vscodePath;
+  }
+  return 'code';
+}
+
+// --- Helper: Claude Code deny rules ---
+const DENY_RULES = [
+  "Bash(rm:*)",
+  "Bash(rm -rf:*)",
+  "Bash(sudo:*)",
+  "Bash(systemctl stop:*)",
+  "Bash(systemctl restart:*)",
+  "Bash(scp:*)",
+  "Bash(sftp:*)",
+  "Bash(ssh:*)",
+  "Bash(curl -X POST:*)",
+  "Bash(curl -X DELETE:*)",
+  "Bash(curl -X PUT:*)"
+];
+
+const CLAUDE_SETTINGS_PATH = path.join(__dirname, '.claude', 'settings.local.json');
+
+function installDenyRules() {
+  let settings = {};
+  try {
+    const dir = path.dirname(CLAUDE_SETTINGS_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
+      settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
+    }
+  } catch (e) {
+    settings = {};
+  }
+
+  if (!settings.permissions) settings.permissions = {};
+  if (!Array.isArray(settings.permissions.deny)) settings.permissions.deny = [];
+
+  // 중복 제거하며 병합
+  const existing = new Set(settings.permissions.deny);
+  for (const rule of DENY_RULES) {
+    existing.add(rule);
+  }
+  settings.permissions.deny = [...existing];
+
+  fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8');
+  return { success: true, count: settings.permissions.deny.length };
+}
+
+function getDenyRulesStatus() {
+  try {
+    if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
+      const settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
+      const count = (settings.permissions && settings.permissions.deny) ? settings.permissions.deny.length : 0;
+      return { installed: count > 0, count };
+    }
+  } catch (e) {}
+  return { installed: false, count: 0 };
 }
 
 // --- IPC Handlers ---
@@ -120,8 +225,75 @@ function setupIPC() {
     return { success: true };
   });
 
+  // Safety: deny rules
+  ipcMain.handle('safety:install-deny-rules', () => installDenyRules());
+  ipcMain.handle('safety:get-deny-rules-status', () => getDenyRulesStatus());
+
+  // Build
+  ipcMain.handle('build:get-config', () => config.build || {});
+  ipcMain.handle('build:save-config', (_, buildCfg) => {
+    config.build = buildCfg;
+    saveConfig(config);
+    return { success: true };
+  });
+  // Diagnostics exec
+  ipcMain.handle('diag:exec', async (_, { serverId, command }) => {
+    return new Promise((resolve) => {
+      if (!sshManager) return resolve({ output: '연결 없음', error: true });
+      sshManager.diagExec(serverId, command, (output, err) => {
+        resolve({ output: output || '', error: !!err });
+      });
+    });
+  });
+
+  ipcMain.on('build:start', () => {
+    const b = config.build;
+    if (!b || !b.command || !b.work_dir) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('build:log', '[DevMonitor] 빌드 설정이 없습니다. 설정에서 빌드 명령을 입력해주세요.\r\n');
+      }
+      return;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('build:log', `\r\n[DevMonitor] 빌드 시작: ${b.command}\r\n`);
+      mainWindow.webContents.send('build:status', 'running');
+    }
+    const child = require('child_process').spawn(
+      'cmd.exe', ['/c', b.command],
+      { cwd: b.work_dir, windowsHide: true }
+    );
+    child.stdout.on('data', (d) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('build:log', d.toString('utf8').replace(/\n/g, '\r\n'));
+      }
+    });
+    child.stderr.on('data', (d) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('build:log', d.toString('utf8').replace(/\n/g, '\r\n'));
+      }
+    });
+    child.on('close', (code) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const msg = code === 0
+          ? '\r\n[DevMonitor] \u2705 빌드 성공\r\n'
+          : `\r\n[DevMonitor] \u274C 빌드 실패 (exit ${code})\r\n`;
+        mainWindow.webContents.send('build:log', msg);
+        mainWindow.webContents.send('build:status', code === 0 ? 'success' : 'failed');
+      }
+    });
+  });
+
+  // Project path
+  ipcMain.handle('config:set-project-path', (_, projectPath) => {
+    if (!config) config = { servers: [], project_path: '' };
+    config.project_path = projectPath;
+    saveConfig(config);
+    return { success: true, project_path: config.project_path };
+  });
+
   // Server CRUD
   ipcMain.handle('server:add', (_, server) => {
+    if (!config) config = { servers: [] };
     const errors = validateServer(server);
     if (errors.length > 0) return { success: false, errors };
 
@@ -203,14 +375,81 @@ function setupIPC() {
 
   // Error resolve - compositeKey is "serverId::errorKey"
   ipcMain.on('error:resolve', (_, compositeKey) => {
+    console.log('[Resolve] compositeKey:', compositeKey);
+
+    // 1. errorDetector.groups에서 조회, 없으면 DB에서 조회
+    let file = null;
+    let line = null;
+    let serverId = null;
+    let errorKey = null;
+
     if (errorDetector) {
       const group = errorDetector.groups.get(compositeKey);
-      if (group && group.file && group.line) {
-        require('child_process').exec(`code "${group.file}:${group.line}"`);
+      console.log('[Resolve] group from detector:', group);
+      if (group) {
+        file = group.file;
+        line = group.line;
+        serverId = group.serverId;
+        errorKey = group.errorKey;
       }
-      if (errorDB && group) {
-        errorDB.resolve(group.serverId, group.errorKey);
+    }
+
+    if (!file && errorDB) {
+      const row = errorDB.getByCompositeKey(compositeKey);
+      console.log('[Resolve] row from DB:', row);
+      if (row && row.file_location) {
+        const parts = row.file_location.split(':');
+        file = parts[0];
+        line = parts[1] || '0';
+        serverId = row.server_id;
+        errorKey = row.error_key;
       }
+    }
+
+    // 2. file이 unknown이거나 line이 0이면 VSCode 안 열기
+    if (!file || file === 'unknown' || file === 'frontend' || !line || line === '0') {
+      console.log('[Resolve] 파일 위치를 특정할 수 없음:', file, line);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:status', {
+          type: 'info',
+          message: '파일 위치를 특정할 수 없습니다'
+        });
+      }
+    } else {
+      // 3. project_path 하위 재귀 탐색 후 VSCode 열기
+      const projectPath = config && config.project_path ? config.project_path : '';
+      const foundPath = projectPath ? findFileRecursive(projectPath, file) : null;
+      console.log('[Resolve] filePath:', foundPath);
+      if (foundPath) {
+        const codeCmd = getVSCodeCommand();
+        const cmd = `"${codeCmd}" -g "${foundPath}:${line}"`;
+        console.log('[Resolve] opening VSCode:', cmd);
+        require('child_process').exec(cmd, (err) => {
+          if (err) console.error('[Resolve] exec error:', err);
+        });
+      }
+    }
+
+    // DB에서 resolved 마킹
+    if (errorDB && serverId && errorKey) {
+      errorDB.resolve(serverId, errorKey);
+    }
+  });
+
+  // Error unresolve
+  ipcMain.on('error:unresolve', (_, compositeKey) => {
+    if (!errorDB) return;
+    const parts = compositeKey.split('::');
+    if (parts.length === 2) errorDB.unresolve(parts[0], parts[1]);
+  });
+
+  // Error delete
+  ipcMain.on('error:delete', (_, compositeKeys) => {
+    if (!errorDB) return;
+    if (compositeKeys === 'ALL') {
+      errorDB.deleteAll();
+    } else {
+      errorDB.deleteMany(compositeKeys);
     }
   });
 
@@ -260,9 +499,9 @@ function connectSingleServer(server) {
 function initializeConnections() {
   if (!config || !config.servers || config.servers.length === 0) return;
 
-  // PTY (Sector 1) - start with first server's local_path
+  // PTY (Sector 1) - start with project_path
   const firstServer = config.servers[0];
-  const initialPath = firstServer.local_path || null;
+  const initialPath = config.project_path || null;
 
   try {
     const PtyManager = require('./pty');
@@ -331,18 +570,22 @@ function onNewError(compositeKey, group) {
   // Find the server for this error
   const server = config ? config.servers.find(s => s.id === group.serverId) : null;
 
-  // Mode A: clipboard copy
+  // Mode A: clipboard copy + Claude 터미널에 텍스트 입력 (엔터 없음)
   if (currentMode === 'A') {
     const text = group.rawText || `${group.errorType} @ ${group.file}:${group.line}`;
     clipboard.writeText(text);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('clipboard:copy', compositeKey);
     }
+    const errorPrompt = `다음 서버 에러를 분석하고 수정 방안을 제시해줘 (코드 수정은 하지 마): ${text}`;
+    if (ptyManager) {
+      ptyManager.injectWithoutEnter(errorPrompt);
+    }
   }
 
   // Mode B: auto-inject into PTY with context switch
   if (currentMode === 'B' && ptyManager && server) {
-    const prompt = `다음 서버 에러를 분석하고 수정 방안을 제시해줘 (코드 수정은 하지 마): ${group.rawText || group.errorType + ' @ ' + group.file + ':' + group.line}`;
+    const prompt = `다음 서버 에러를 분석하고 코드를 수정해줘: ${group.rawText || group.errorType + ' @ ' + group.file + ':' + group.line}`;
     ptyManager.switchContext(server, prompt, compositeKey);
   }
 
