@@ -24,6 +24,7 @@
     </div>
     <div class="topbar-right">
       <button id="build-btn" class="icon-btn" title="빌드 시작" style="font-size:13px;">🔨 빌드</button>
+      <span id="deploy-badge" style="font-size:11px;color:#6c7086;padding:0 6px;align-self:center;"></span>
       <button id="notification-toggle" class="icon-btn" title="알림 ON/OFF">🔔</button>
       <button id="settings-btn" class="icon-btn" title="설정">⚙️</button>
     </div>
@@ -44,6 +45,20 @@
             <button id="err-delete-selected" class="icon-btn" title="선택 삭제" style="font-size:11px;padding:2px 6px;">🗑 선택삭제</button>
             <button id="err-delete-all" class="icon-btn" title="전체 삭제" style="font-size:11px;padding:2px 6px;">🗑 전체삭제</button>
           </div>
+        </div>
+        <div id="error-filter-bar" style="display:flex;gap:6px;padding:6px 8px;background:#181825;border-bottom:1px solid #313244;flex-wrap:wrap;">
+          <select id="filter-server" style="font-size:11px;background:#313244;color:#cdd6f4;border:none;border-radius:4px;padding:2px 6px;">
+            <option value="ALL">전체 서버</option>
+          </select>
+          <select id="filter-type" style="font-size:11px;background:#313244;color:#cdd6f4;border:none;border-radius:4px;padding:2px 6px;">
+            <option value="ALL">전체 에러</option>
+          </select>
+          <select id="filter-date" style="font-size:11px;background:#313244;color:#cdd6f4;border:none;border-radius:4px;padding:2px 6px;">
+            <option value="ALL">전체 날짜</option>
+            <option value="TODAY">오늘</option>
+            <option value="WEEK">이번 주</option>
+          </select>
+          <button id="filter-reset" style="font-size:11px;background:#45475a;color:#cdd6f4;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;">초기화</button>
         </div>
         <div id="error-list" style="overflow-y:auto;flex:1;">
           <div class="err-section-title">🔴 미해결</div>
@@ -74,7 +89,7 @@
             </div>
             <div class="tab-form-row">
               <label>PEM 경로</label>
-              <input type="text" id="tab-srv-pem" placeholder="C:/Users/.../server.pem">
+              <input type="text" id="tab-srv-pem" placeholder="PEM 경로">
             </div>
             <div class="tab-form-row">
               <label>EC2 IP</label>
@@ -94,7 +109,7 @@
             </div>
             <div class="tab-form-row">
               <label>로컬 경로</label>
-              <input type="text" id="tab-srv-local" placeholder="C:/Users/.../my-project/backend">
+              <input type="text" id="tab-srv-local" placeholder="로컬 경로">
             </div>
             <div id="tab-form-errors" class="tab-form-errors"></div>
             <div class="tab-form-actions">
@@ -144,18 +159,69 @@
       <div id="settings-errors" class="settings-errors"></div>
       <div class="settings-section-title" style="margin-top:16px;">빌드 / 배포 설정</div>
       <div class="settings-row" style="margin-bottom:6px;">
+        <label style="font-size:12px;color:#cdd6f4;">OS</label>
+        <select id="settings-os" style="width:100%;margin-top:2px;padding:4px;background:#313244;color:#cdd6f4;border:1px solid #585b70;border-radius:4px;">
+          <option value="windows">Windows</option>
+          <option value="mac">Mac</option>
+        </select>
+      </div>
+      <div class="settings-row" style="margin-bottom:6px;">
+        <label style="font-size:12px;color:#cdd6f4;">배포 방식</label>
+        <select id="settings-deploy-mode" style="width:100%;margin-top:2px;padding:4px;background:#313244;color:#cdd6f4;border:1px solid #585b70;border-radius:4px;">
+          <option value="direct">직접 전송 (로컬 빌드 → SCP → EC2 재시작)</option>
+          <option value="github">GitHub Actions (git push)</option>
+        </select>
+      </div>
+      <div class="settings-row" style="margin-bottom:6px;">
         <label style="font-size:12px;color:#cdd6f4;">빌드 명령</label>
-        <input type="text" id="settings-build-command" placeholder="build.bat 또는 mvn clean package" style="width:100%;margin-top:2px;">
+        <input type="text" id="settings-build-command" placeholder=".\mvnw.cmd clean package -DskipTests" style="width:100%;margin-top:2px;">
       </div>
       <div class="settings-row" style="margin-bottom:6px;">
         <label style="font-size:12px;color:#cdd6f4;">빌드 작업 디렉터리</label>
         <input type="text" id="settings-build-dir" placeholder="C:\Projects\myapp\backend" style="width:100%;margin-top:2px;">
       </div>
-      <div class="settings-row" style="margin-bottom:6px;">
-        <label style="font-size:12px;color:#cdd6f4;">빌드된 jar 절대경로 <span style="color:#888;font-size:11px;">(선택)</span></label>
-        <input type="text" id="settings-build-jar" placeholder="C:\...\target\demo-0.0.1-SNAPSHOT.jar" style="width:100%;margin-top:2px;">
+      <div id="deploy-direct-fields">
+        <div class="settings-row" style="margin-bottom:6px;">
+          <label style="font-size:12px;color:#cdd6f4;">빌드된 jar 절대경로</label>
+          <input type="text" id="settings-build-jar" placeholder="C:\...\target\demo-0.0.1-SNAPSHOT.jar" style="width:100%;margin-top:2px;">
+        </div>
+        <div class="settings-row" style="margin-bottom:6px;">
+          <label style="font-size:12px;color:#cdd6f4;">배포 대상 서버</label>
+          <select id="settings-deploy-server" style="width:100%;margin-top:2px;padding:4px;background:#313244;color:#cdd6f4;border:1px solid #585b70;border-radius:4px;"></select>
+        </div>
+        <div class="settings-row" style="margin-bottom:6px;">
+          <label style="font-size:12px;color:#cdd6f4;">EC2 재시작 명령</label>
+          <input type="text" id="settings-ec2-restart" placeholder="docker restart backend" style="width:100%;margin-top:2px;">
+        </div>
+      </div>
+      <div id="deploy-github-fields" style="display:none;">
+        <div class="settings-row" style="margin-bottom:6px;">
+          <label style="font-size:12px;color:#cdd6f4;">git 작업 디렉터리</label>
+          <input type="text" id="settings-git-dir" placeholder="C:\Projects\myapp (비우면 빌드 디렉터리 사용)" style="width:100%;margin-top:2px;">
+        </div>
       </div>
       <button id="settings-build-save" class="settings-add-btn" style="margin-top:6px;">저장</button>
+
+      <div class="settings-section-title" style="margin-top:16px;">자동 분석 리포트 (C 기능)</div>
+      <div style="font-size:12px;color:#888;margin-bottom:8px;">
+        주기적으로 에러를 집계해 Claude Code에 분석 요청.<br>
+        결과는 메뉴 → 분석 리포트에서 확인.
+      </div>
+      <div class="settings-row" style="margin-bottom:6px;">
+        <label style="font-size:12px;color:#cdd6f4;display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="settings-auto-report-enabled">
+          자동 분석 활성화
+        </label>
+      </div>
+      <div class="settings-row" style="margin-bottom:6px;">
+        <label style="font-size:12px;color:#cdd6f4;">분석 주기</label>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+          <input type="number" id="settings-auto-report-hours" value="24" min="1" max="168"
+            style="width:70px;padding:4px;background:#313244;color:#cdd6f4;border:1px solid #585b70;border-radius:4px;">
+          <span style="font-size:12px;color:#888;">시간마다</span>
+        </div>
+      </div>
+      <button id="settings-report-save" class="settings-add-btn" style="margin-top:4px;">저장</button>
 
       <div class="settings-section-title" style="margin-top:16px;">Claude Code 권한 deny 규칙</div>
       <div style="font-size:12px;color:#888;margin-bottom:8px;">
