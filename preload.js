@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('devmonitor', {
+  // Platform info
+  platform: process.platform, // 'win32' | 'darwin' | 'linux'
   // PTY (Sector 1)
   onPtyData: (cb) => ipcRenderer.on('pty:data', (_, data) => cb(data)),
   writePty: (data) => ipcRenderer.send('pty:write', data),
@@ -52,6 +54,9 @@ contextBridge.exposeInMainWorld('devmonitor', {
   // Clipboard copy notification
   onClipboardCopy: (cb) => ipcRenderer.on('clipboard:copy', (_, key) => cb(key)),
 
+  // Deploy history
+  getDeployHistory: () => ipcRenderer.invoke('deploy:get-history'),
+
   // Diagnostics
   diagExec: (serverId, command) => ipcRenderer.invoke('diag:exec', { serverId, command }),
 
@@ -67,5 +72,15 @@ contextBridge.exposeInMainWorld('devmonitor', {
   getDenyRulesStatus: () => ipcRenderer.invoke('safety:get-deny-rules-status'),
 
   // App status
-  onAppStatus: (cb) => ipcRenderer.on('app:status', (_, data) => cb(data))
+  onAppStatus: (cb) => ipcRenderer.on('app:status', (_, data) => cb(data)),
+
+  // Analysis reports
+  getAllReports: () => ipcRenderer.invoke('report:get-all'),
+  getReportConfig: () => ipcRenderer.invoke('report:get-config'),
+  saveReportConfig: (cfg) => ipcRenderer.invoke('report:save-config', cfg),
+  runReportNow: () => ipcRenderer.send('report:run-now'),
+  onAutoReportDone: (cb) => ipcRenderer.on('report:auto-done', (_, data) => cb(data)),
+  onReportAnalysisUpdated: (cb) => ipcRenderer.on('report:analysis-updated', (_, data) => cb(data)),
+  getReportStats: (modifier) => ipcRenderer.invoke('report:get-stats', modifier),
+  onStatsRefresh: (cb) => ipcRenderer.on('report:stats-refresh', () => cb())
 });
