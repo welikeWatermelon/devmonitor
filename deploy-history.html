@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>배포 이력</title>
+  <style>
+    body { background:#1e1e2e; color:#cdd6f4; font-family:'Consolas',monospace; font-size:13px; margin:0; padding:16px; }
+    h2 { color:#89b4fa; margin-bottom:12px; }
+    table { width:100%; border-collapse:collapse; }
+    th { background:#313244; padding:8px; text-align:left; font-size:12px; color:#6c7086; }
+    td { padding:8px; border-bottom:1px solid #313244; font-size:12px; }
+    .success { color:#a6e3a1; font-weight:bold; }
+    .failed { color:#f38ba8; font-weight:bold; }
+    .log-toggle { font-size:11px; color:#89b4fa; cursor:pointer; }
+    .log-box { display:none; background:#181825; padding:8px; margin-top:4px; font-size:11px; white-space:pre-wrap; max-height:150px; overflow-y:auto; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <h2>📦 배포 이력</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>일시</th><th>서버</th><th>방식</th><th>OS</th><th>결과</th><th>로그</th>
+      </tr>
+    </thead>
+    <tbody id="history-body"></tbody>
+  </table>
+  <script>
+    window.devmonitor.getDeployHistory().then(rows => {
+      const tbody = document.getElementById('history-body');
+      if (!rows || !rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color:#6c7086;text-align:center;padding:24px;">배포 이력이 없습니다</td></tr>';
+        return;
+      }
+      rows.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        const logEscaped = (row.log || '(로그 없음)').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        tr.innerHTML = `
+          <td>${row.deployed_at}</td>
+          <td>${row.server_name || row.server_id || 'N/A'}</td>
+          <td>${row.deploy_mode === 'github' ? '⚡ GitHub Actions' : '📦 직접전송'}</td>
+          <td>${row.os === 'mac' ? '🍎 Mac' : '🪟 Win'}</td>
+          <td class="${row.status}">${row.status === 'success' ? '✅ 성공' : '❌ 실패'}</td>
+          <td><span class="log-toggle" data-idx="${i}">로그 보기</span>
+            <div class="log-box" id="log-${i}">${logEscaped}</div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.querySelectorAll('.log-toggle').forEach(el => {
+        el.addEventListener('click', () => {
+          const box = document.getElementById('log-' + el.dataset.idx);
+          box.style.display = box.style.display === 'block' ? 'none' : 'block';
+        });
+      });
+    });
+  </script>
+</body>
+</html>
