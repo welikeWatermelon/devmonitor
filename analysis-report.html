@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>DevMonitor — 에러 분석</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    #header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: #181825;
+      border-bottom: 1px solid #313244;
+      flex-shrink: 0;
+    }
+    #header h1 { font-size: 14px; color: #cba6f7; }
+
+    .period-tabs { display: flex; gap: 4px; }
+    .period-tab {
+      padding: 4px 14px;
+      border: 1px solid #313244;
+      border-radius: 6px;
+      background: transparent;
+      color: #6c7086;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .period-tab:hover { border-color: #585b70; color: #cdd6f4; }
+    .period-tab.active {
+      background: #cba6f7;
+      border-color: #cba6f7;
+      color: #1e1e2e;
+      font-weight: bold;
+    }
+
+    .refresh-btn {
+      padding: 4px 12px;
+      border: 1px solid #313244;
+      border-radius: 6px;
+      background: transparent;
+      color: #6c7086;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .refresh-btn:hover { border-color: #585b70; color: #cdd6f4; }
+
+    /* ── Summary cards ── */
+    #summary-row {
+      display: flex;
+      gap: 10px;
+      padding: 12px 16px;
+      background: #181825;
+      border-bottom: 1px solid #313244;
+      flex-shrink: 0;
+    }
+    .stat-card {
+      flex: 1;
+      background: #1e1e2e;
+      border: 1px solid #313244;
+      border-radius: 8px;
+      padding: 10px 14px;
+      text-align: center;
+    }
+    .stat-card .val {
+      font-size: 22px;
+      font-weight: bold;
+      line-height: 1.2;
+    }
+    .stat-card .lbl {
+      font-size: 11px;
+      color: #6c7086;
+      margin-top: 2px;
+    }
+    .stat-card.red .val { color: #f38ba8; }
+    .stat-card.green .val { color: #a6e3a1; }
+    .stat-card.blue .val { color: #89b4fa; }
+    .stat-card.purple .val { color: #cba6f7; }
+
+    /* ── Chart grid ── */
+    #chart-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 10px;
+      padding: 10px 16px;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .chart-card {
+      background: #181825;
+      border: 1px solid #313244;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chart-title {
+      font-size: 11px;
+      color: #6c7086;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+      flex-shrink: 0;
+    }
+    .chart-wrap {
+      flex: 1;
+      position: relative;
+      min-height: 0;
+    }
+    .chart-wrap canvas {
+      position: absolute;
+      inset: 0;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      flex-direction: column;
+      gap: 6px;
+      color: #45475a;
+      font-size: 12px;
+    }
+    .empty-state .icon { font-size: 28px; }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #313244;
+      color: #cdd6f4;
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      z-index: 100;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>📊 에러 분석 대시보드</h1>
+    <div class="period-tabs">
+      <button class="period-tab active" data-modifier="-1 day">오늘</button>
+      <button class="period-tab" data-modifier="-7 days">7일</button>
+      <button class="period-tab" data-modifier="-30 days">30일</button>
+    </div>
+    <button class="refresh-btn" id="refresh-btn">🔄 새로고침</button>
+  </div>
+
+  <div id="summary-row">
+    <div class="stat-card red">
+      <div class="val" id="s-total">—</div>
+      <div class="lbl">총 발생 횟수</div>
+    </div>
+    <div class="stat-card purple">
+      <div class="val" id="s-types">—</div>
+      <div class="lbl">에러 종류</div>
+    </div>
+    <div class="stat-card red">
+      <div class="val" id="s-unresolved">—</div>
+      <div class="lbl">미해결</div>
+    </div>
+    <div class="stat-card green">
+      <div class="val" id="s-resolved">—</div>
+      <div class="lbl">해결완료</div>
+    </div>
+    <div class="stat-card blue">
+      <div class="val" id="s-servers">—</div>
+      <div class="lbl">서버 수</div>
+    </div>
+  </div>
+
+  <div id="chart-grid">
+    <div class="chart-card">
+      <div class="chart-title">⏱ 시간대별 에러 발생 추이</div>
+      <div class="chart-wrap"><canvas id="chart-timeline"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">🔍 에러 타입별 비율</div>
+      <div class="chart-wrap"><canvas id="chart-types"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">🖥 서버별 에러 건수</div>
+      <div class="chart-wrap"><canvas id="chart-servers"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">✅ 해결 vs 미해결</div>
+      <div class="chart-wrap"><canvas id="chart-resolution"></canvas></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const dm = window.devmonitor;
+
+    // ── Chart.js 전역 설정 ──
+    Chart.defaults.color = '#6c7086';
+    Chart.defaults.borderColor = '#313244';
+    Chart.defaults.font.family = "'Cascadia Code', 'Consolas', monospace";
+    Chart.defaults.font.size = 11;
+
+    const COLORS = [
+      '#f38ba8', '#89b4fa', '#a6e3a1', '#f9e2af',
+      '#cba6f7', '#89dceb', '#fab387', '#eba0ac'
+    ];
+
+    // ── 상태 ──
+    let currentModifier = '-1 day';
+    let charts = {};
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2500);
+    }
+
+    // ── 기간 탭 ──
+    document.querySelectorAll('.period-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.period-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentModifier = btn.dataset.modifier;
+        loadStats();
+      });
+    });
+    document.getElementById('refresh-btn').addEventListener('click', () => loadStats());
+
+    // ── 타임라인 레이블 생성 ──
+    function buildTimelineLabels(modifier) {
+      if (modifier === '-1 day') {
+        return Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00');
+      } else if (modifier === '-7 days') {
+        const days = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(); d.setDate(d.getDate() - i);
+          days.push(d.toISOString().substring(5, 10)); // MM-DD
+        }
+        return days;
+      } else {
+        const days = [];
+        for (let i = 29; i >= 0; i--) {
+          const d = new Date(); d.setDate(d.getDate() - i);
+          days.push(d.toISOString().substring(5, 10)); // MM-DD
+        }
+        return days;
+      }
+    }
+
+    function mergeTimeline(labels, rows, modifier) {
+      const map = {};
+      rows.forEach(r => { map[r.bucket] = r.total; });
+      return labels.map(label => {
+        if (modifier === '-1 day') {
+          return map[label.substring(0, 2)] || 0;
+        } else {
+          // label = MM-DD, bucket = YYYY-MM-DD
+          const year = new Date().getFullYear();
+          const key = `${year}-${label}`;
+          return map[key] || 0;
+        }
+      });
+    }
+
+    // ── 차트 생성/업데이트 ──
+    function destroyChart(id) {
+      if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+    }
+
+    function renderTimeline(timeSeries, modifier) {
+      destroyChart('timeline');
+      const labels = buildTimelineLabels(modifier);
+      const data = mergeTimeline(labels, timeSeries, modifier);
+
+      // 표시 레이블 축약 (30일은 짝수만)
+      const displayLabels = modifier === '-30 days'
+        ? labels.map((l, i) => i % 3 === 0 ? l : '')
+        : labels;
+
+      charts.timeline = new Chart(document.getElementById('chart-timeline'), {
+        type: 'line',
+        data: {
+          labels: displayLabels,
+          datasets: [{
+            label: '에러 수',
+            data,
+            borderColor: '#89b4fa',
+            backgroundColor: 'rgba(137, 180, 250, 0.12)',
+            borderWidth: 2,
+            pointRadius: modifier === '-30 days' ? 2 : 3,
+            pointBackgroundColor: '#89b4fa',
+            fill: true,
+            tension: 0.3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: {
+              grid: { color: '#313244' },
+              ticks: { maxRotation: 0, color: '#6c7086' }
+            },
+            y: {
+              grid: { color: '#313244' },
+              ticks: { color: '#6c7086', stepSize: 1 },
+              beginAtZero: true
+            }
+          }
+        }
+      });
+    }
+
+    function renderTypes(typeStats) {
+      destroyChart('types');
+      if (!typeStats || typeStats.length === 0) return;
+
+      const labels = typeStats.map(r => {
+        const t = r.error_type || '알수없음';
+        return t.length > 30 ? t.substring(0, 28) + '…' : t;
+      });
+      const data = typeStats.map(r => r.total);
+
+      charts.types = new Chart(document.getElementById('chart-types'), {
+        type: 'doughnut',
+        data: {
+          labels,
+          datasets: [{
+            data,
+            backgroundColor: COLORS,
+            borderColor: '#181825',
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'right',
+              labels: {
+                color: '#cdd6f4',
+                font: { size: 10 },
+                boxWidth: 12,
+                padding: 8,
+                generateLabels(chart) {
+                  const ds = chart.data.datasets[0];
+                  const total = ds.data.reduce((a, b) => a + b, 0);
+                  return chart.data.labels.map((label, i) => ({
+                    text: `${label} (${ds.data[i]})`,
+                    fillStyle: ds.backgroundColor[i],
+                    hidden: false,
+                    index: i
+                  }));
+                }
+              }
+            }
+          },
+          cutout: '55%'
+        }
+      });
+    }
+
+    function renderServers(serverStats) {
+      destroyChart('servers');
+      if (!serverStats || serverStats.length === 0) return;
+
+      const labels = serverStats.map(r => r.server_name || r.server_id || '알수없음');
+      const data = serverStats.map(r => r.total);
+
+      charts.servers = new Chart(document.getElementById('chart-servers'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: '에러 수',
+            data,
+            backgroundColor: labels.map((_, i) => COLORS[i % COLORS.length] + 'cc'),
+            borderColor: labels.map((_, i) => COLORS[i % COLORS.length]),
+            borderWidth: 1,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          indexAxis: 'y',
+          plugins: { legend: { display: false } },
+          scales: {
+            x: {
+              grid: { color: '#313244' },
+              ticks: { color: '#6c7086', stepSize: 1 },
+              beginAtZero: true
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: '#cdd6f4' }
+            }
+          }
+        }
+      });
+    }
+
+    function renderResolution(resRows) {
+      destroyChart('resolution');
+
+      const resolved = resRows.find(r => r.resolved === 1)?.total || 0;
+      const unresolved = resRows.find(r => r.resolved === 0)?.total || 0;
+
+      charts.resolution = new Chart(document.getElementById('chart-resolution'), {
+        type: 'doughnut',
+        data: {
+          labels: [`미해결 (${unresolved})`, `해결완료 (${resolved})`],
+          datasets: [{
+            data: [unresolved, resolved],
+            backgroundColor: ['#f38ba8cc', '#a6e3a1cc'],
+            borderColor: ['#f38ba8', '#a6e3a1'],
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: {
+                color: '#cdd6f4',
+                font: { size: 12 },
+                padding: 16,
+                boxWidth: 14
+              }
+            }
+          },
+          cutout: '60%'
+        }
+      });
+    }
+
+    // ── 메인 로드 ──
+    async function loadStats() {
+      document.getElementById('refresh-btn').textContent = '⏳';
+      try {
+        const stats = await dm.getReportStats(currentModifier);
+
+        if (!stats) {
+          document.getElementById('s-total').textContent = '0';
+          document.getElementById('s-types').textContent = '0';
+          document.getElementById('s-unresolved').textContent = '0';
+          document.getElementById('s-resolved').textContent = '0';
+          document.getElementById('s-servers').textContent = '0';
+          renderTimeline([], currentModifier);
+          renderTypes([]);
+          renderServers([]);
+          renderResolution([]);
+          return;
+        }
+
+        const { timeSeries, typeStats, serverStats, resRows, summary } = stats;
+
+        // 요약 카드
+        document.getElementById('s-total').textContent = (summary?.total_count || 0).toLocaleString();
+        document.getElementById('s-types').textContent = (summary?.type_count || 0).toLocaleString();
+        document.getElementById('s-unresolved').textContent = (summary?.unresolved_count || 0).toLocaleString();
+        document.getElementById('s-resolved').textContent = (summary?.resolved_count || 0).toLocaleString();
+        document.getElementById('s-servers').textContent = (summary?.server_count || 0).toLocaleString();
+
+        // 차트
+        renderTimeline(timeSeries, currentModifier);
+        renderTypes(typeStats);
+        renderServers(serverStats);
+        renderResolution(resRows);
+
+      } catch (e) {
+        showToast('통계 로드 실패: ' + e.message);
+      } finally {
+        document.getElementById('refresh-btn').textContent = '🔄 새로고침';
+      }
+    }
+
+    // 외부에서 새로고침 이벤트 수신
+    if (dm.onStatsRefresh) dm.onStatsRefresh(() => loadStats());
+
+    // 초기 로드
+    loadStats();
+  </script>
+</body>
+</html>
