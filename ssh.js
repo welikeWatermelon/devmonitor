@@ -20,7 +20,6 @@ class SSHManager {
       keepaliveCountMax: 3,
       readyTimeout: 15000
     };
-
     if (server.pem_key_path) {
       try {
         opts.privateKey = fs.readFileSync(server.pem_key_path);
@@ -28,7 +27,6 @@ class SSHManager {
         console.error(`[${server.id}] PEM 파일 읽기 실패:`, e.message);
       }
     }
-
     return opts;
   }
 
@@ -69,14 +67,7 @@ class SSHManager {
   // --- Connect a single server (both log + btop) ---
   connectServer(server, onLogData, onBtopData, onStatus) {
     if (this.disposed) return;
-
-    this._callbacks.set(server.id, {
-      server,
-      onLogData,
-      onBtopData,
-      onStatus
-    });
-
+    this._callbacks.set(server.id, { server, onLogData, onBtopData, onStatus });
     this._connectLog(server);
     this._connectBtop(server);
   }
@@ -85,26 +76,12 @@ class SSHManager {
   disconnectServer(serverId) {
     const entry = this.connections.get(serverId);
     if (!entry) return;
-
-    if (entry.reconnectTimers.log) {
-      clearTimeout(entry.reconnectTimers.log);
-      entry.reconnectTimers.log = null;
-    }
-    if (entry.reconnectTimers.btop) {
-      clearTimeout(entry.reconnectTimers.btop);
-      entry.reconnectTimers.btop = null;
-    }
-    if (entry.logConn) {
-      try { entry.logConn.end(); } catch (e) {}
-      entry.logConn = null;
-    }
-    if (entry.btopConn) {
-      try { entry.btopConn.end(); } catch (e) {}
-      entry.btopConn = null;
-    }
+    if (entry.reconnectTimers.log) { clearTimeout(entry.reconnectTimers.log); entry.reconnectTimers.log = null; }
+    if (entry.reconnectTimers.btop) { clearTimeout(entry.reconnectTimers.btop); entry.reconnectTimers.btop = null; }
+    if (entry.logConn) { try { entry.logConn.end(); } catch (e) {} entry.logConn = null; }
+    if (entry.btopConn) { try { entry.btopConn.end(); } catch (e) {} entry.btopConn = null; }
     entry.logStream = null;
     entry.btopStream = null;
-
     this.connections.delete(serverId);
     this._callbacks.delete(serverId);
   }
@@ -119,7 +96,6 @@ class SSHManager {
   // --- Log stream (Sector 2) ---
   _connectLog(server) {
     if (this.disposed) return;
-
     const entry = this._getOrCreateEntry(server.id);
     const cb = this._callbacks.get(server.id);
     if (!cb) return;
@@ -132,7 +108,6 @@ class SSHManager {
       cb.onStatus(server.id, 'log', 'connected');
 
       const cmd = `tail -F ${server.log_path} 2>&1`;
-
       entry.logConn.exec(cmd, (err, stream) => {
         if (err) {
           console.error(`[${server.id}] Log exec error:`, err.message);
@@ -141,20 +116,14 @@ class SSHManager {
           this._reconnectLog(server.id);
           return;
         }
-
         entry.logStream = stream;
-
-        stream.on('data', (data) => {
-          cb.onLogData(server.id, data.toString('utf8'));
-        });
-
+        stream.on('data', (data) => { cb.onLogData(server.id, data.toString('utf8')); });
         stream.stderr.on('data', (data) => {
           const msg = data.toString('utf8');
           if (msg.includes('No such file') || msg.includes('cannot open')) {
             cb.onLogData(server.id, `\r\n[DevMonitor] 로그 파일을 찾을 수 없습니다: ${server.log_path}\r\n`);
           }
         });
-
         stream.on('close', () => {
           if (!this.disposed) {
             entry.status.log = 'disconnected';
@@ -204,12 +173,7 @@ class SSHManager {
     entry.reconnectTimers.log = setTimeout(() => {
       entry.reconnectTimers.log = null;
       entry.backoff.log = Math.min(entry.backoff.log * 2, 30000);
-
-      if (entry.logConn) {
-        try { entry.logConn.end(); } catch (e) {}
-        entry.logConn = null;
-      }
-
+      if (entry.logConn) { try { entry.logConn.end(); } catch (e) {} entry.logConn = null; }
       this._connectLog(cb.server);
     }, delay);
   }
@@ -217,7 +181,6 @@ class SSHManager {
   // --- Btop shell (Sector 3) ---
   _connectBtop(server) {
     if (this.disposed) return;
-
     const entry = this._getOrCreateEntry(server.id);
     const cb = this._callbacks.get(server.id);
     if (!cb) return;
@@ -237,13 +200,11 @@ class SSHManager {
           this._reconnectBtop(server.id);
           return;
         }
-
         entry.btopStream = stream;
 
         stream.on('data', (data) => {
           const text = data.toString('utf8');
           cb.onBtopData(server.id, text);
-
           if ((text.includes('command not found') || text.includes('not found')) && text.includes('btop')) {
             cb.onBtopData(server.id, '\r\n[DevMonitor] btop이 EC2 서버에 설치되어 있지 않습니다.\r\n');
           }
@@ -308,12 +269,7 @@ class SSHManager {
     entry.reconnectTimers.btop = setTimeout(() => {
       entry.reconnectTimers.btop = null;
       entry.backoff.btop = Math.min(entry.backoff.btop * 2, 30000);
-
-      if (entry.btopConn) {
-        try { entry.btopConn.end(); } catch (e) {}
-        entry.btopConn = null;
-      }
-
+      if (entry.btopConn) { try { entry.btopConn.end(); } catch (e) {} entry.btopConn = null; }
       this._connectBtop(cb.server);
     }, delay);
   }
@@ -321,16 +277,12 @@ class SSHManager {
   // --- btop interaction ---
   writeBtop(serverId, data) {
     const entry = this.connections.get(serverId);
-    if (entry && entry.btopStream) {
-      entry.btopStream.write(data);
-    }
+    if (entry && entry.btopStream) entry.btopStream.write(data);
   }
 
   resizeBtop(serverId, cols, rows) {
     const entry = this.connections.get(serverId);
-    if (entry && entry.btopStream) {
-      entry.btopStream.setWindow(rows, cols, 0, 0);
-    }
+    if (entry && entry.btopStream) entry.btopStream.setWindow(rows, cols, 0, 0);
   }
 
   diagExec(serverId, command, callback) {
@@ -348,10 +300,50 @@ class SSHManager {
     });
   }
 
+  // --- SFTP file upload (replaces external scp, avoids Windows path escaping issues) ---
+  sftpUpload(server, localPath, remotePath, onProgress) {
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+      const opts = this._getConnectOptions(server);
+
+      conn.on('ready', () => {
+        conn.sftp((err, sftp) => {
+          if (err) { conn.end(); return reject(err); }
+
+          const readStream = fs.createReadStream(localPath);
+          const writeStream = sftp.createWriteStream(remotePath);
+
+          readStream.on('error', (e) => { conn.end(); reject(e); });
+          writeStream.on('error', (e) => { conn.end(); reject(e); });
+
+          writeStream.on('close', () => {
+            conn.end();
+            resolve();
+          });
+
+          if (onProgress) {
+            try {
+              const total = fs.statSync(localPath).size;
+              let transferred = 0;
+              readStream.on('data', (chunk) => {
+                transferred += chunk.length;
+                onProgress(transferred, total);
+              });
+            } catch (e) { /* stat 실패 시 progress 무시 */ }
+          }
+
+          readStream.pipe(writeStream);
+        });
+      });
+
+      conn.on('error', reject);
+      conn.connect(opts);
+    });
+  }
+
   // --- Cleanup ---
   dispose() {
     this.disposed = true;
-
     for (const [serverId] of this.connections) {
       this.disconnectServer(serverId);
     }
