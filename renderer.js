@@ -378,9 +378,19 @@ document.getElementById('settings-btn').addEventListener('click', () => {
     // 빌드 설정 로드
     window.devmonitor.getBuildConfig().then(b => {
       if (b) {
+        document.getElementById('settings-os').value = b.os || 'windows';
+        document.getElementById('settings-deploy-mode').value = b.deploy_mode || 'direct';
         document.getElementById('settings-build-command').value = b.command || '';
         document.getElementById('settings-build-dir').value = b.work_dir || '';
         document.getElementById('settings-build-jar').value = b.jar_path || '';
+        document.getElementById('settings-ec2-restart').value = b.ec2_restart_cmd || '';
+        document.getElementById('settings-git-dir').value = b.git_work_dir || '';
+        // 배포 대상 서버 드롭다운
+        const serverSelect = document.getElementById('settings-deploy-server');
+        serverSelect.innerHTML = servers.map(s =>
+          `<option value="${s.id}" ${s.id === b.deploy_server_id ? 'selected' : ''}>${s.name}</option>`
+        ).join('');
+        toggleDeployFields(b.deploy_mode || 'direct');
       }
     });
     // deny 규칙 상태 표시
@@ -394,6 +404,15 @@ document.getElementById('settings-btn').addEventListener('click', () => {
         el.style.color = '#f9e2af';
       }
     });
+    // 자동 분석 리포트 설정 로드
+    if (window.devmonitor.getReportConfig) {
+      window.devmonitor.getReportConfig().then(cfg => {
+        const enabledEl = document.getElementById('settings-auto-report-enabled');
+        const hoursEl = document.getElementById('settings-auto-report-hours');
+        if (enabledEl) enabledEl.checked = !!(cfg && cfg.enabled);
+        if (hoursEl) hoursEl.value = (cfg && cfg.interval_hours) || 24;
+      });
+    }
   }
 });
 
@@ -404,6 +423,27 @@ document.getElementById('settings-project-path-save').addEventListener('click', 
     showToast('프로젝트 경로가 저장되었습니다');
   }
 });
+
+// 자동 분석 리포트 설정 저장
+document.getElementById('settings-report-save').addEventListener('click', async () => {
+  const enabled = document.getElementById('settings-auto-report-enabled').checked;
+  const interval_hours = parseInt(document.getElementById('settings-auto-report-hours').value, 10) || 24;
+  if (window.devmonitor.saveReportConfig) {
+    const result = await window.devmonitor.saveReportConfig({ enabled, interval_hours });
+    if (result && result.success) {
+      showToast(enabled
+        ? `자동 분석 활성화 — ${interval_hours}시간마다 실행`
+        : '자동 분석이 비활성화되었습니다');
+    }
+  }
+});
+
+// 자동 분석 완료 토스트
+if (window.devmonitor.onAutoReportDone) {
+  window.devmonitor.onAutoReportDone((data) => {
+    showToast(`📊 자동 분석 완료 — ${data.count}건 에러 집계`);
+  });
+}
 
 document.getElementById('install-deny-rules-btn').addEventListener('click', async () => {
   const result = await window.devmonitor.installDenyRules();
@@ -417,15 +457,42 @@ document.getElementById('install-deny-rules-btn').addEventListener('click', asyn
 
 document.getElementById('settings-build-save').addEventListener('click', async () => {
   const buildCfg = {
+    os: document.getElementById('settings-os').value,
+    deploy_mode: document.getElementById('settings-deploy-mode').value,
     command: document.getElementById('settings-build-command').value.trim(),
     work_dir: document.getElementById('settings-build-dir').value.trim(),
-    jar_path: document.getElementById('settings-build-jar').value.trim()
+    jar_path: document.getElementById('settings-build-jar').value.trim(),
+    deploy_server_id: document.getElementById('settings-deploy-server').value,
+    ec2_restart_cmd: document.getElementById('settings-ec2-restart').value.trim(),
+    git_work_dir: document.getElementById('settings-git-dir').value.trim()
   };
   const result = await window.devmonitor.saveBuildConfig(buildCfg);
   if (result && result.success) {
-    showToast('빌드 설정이 저장되었습니다');
+    showToast('빌드/배포 설정이 저장되었습니다');
+    updateDeployBadge();
   }
 });
+
+// 배포 방식 필드 토글
+function toggleDeployFields(mode) {
+  document.getElementById('deploy-direct-fields').style.display = mode === 'direct' ? '' : 'none';
+  document.getElementById('deploy-github-fields').style.display = mode === 'github' ? '' : 'none';
+}
+
+document.getElementById('settings-deploy-mode').addEventListener('change', (e) => {
+  toggleDeployFields(e.target.value);
+});
+
+// 상단 배지 업데이트
+async function updateDeployBadge() {
+  const b = await window.devmonitor.getBuildConfig();
+  const badge = document.getElementById('deploy-badge');
+  if (!badge || !b) return;
+  const osLabel = b.os === 'mac' ? '\uD83C\uDF4E Mac' : '\uD83E\uDE9F Win';
+  const modeLabel = b.deploy_mode === 'github' ? '\u26A1 GitHub Actions' : '\uD83D\uDCE6 직접전송';
+  badge.textContent = `${osLabel} \u00B7 ${modeLabel}`;
+}
+updateDeployBadge();
 
 document.getElementById('settings-close').addEventListener('click', () => {
   settingsPopup.classList.add('hidden');
@@ -684,6 +751,18 @@ function addErrorToPanel(key, group) {
     document.getElementById('error-list-unresolved').prepend(div);
   }
   errorElements.set(key, div);
+
+  // 에러 타입 드롭다운에 없으면 추가
+  const typeSelect = document.getElementById('filter-type');
+  const errorType = group.errorType || '';
+  if (errorType && ![...typeSelect.options].find(o => o.value === errorType)) {
+    const opt = document.createElement('option');
+    opt.value = errorType;
+    opt.textContent = errorType;
+    typeSelect.appendChild(opt);
+  }
+
+  applyFilter();
 }
 
 function moveToResolved(key, div) {
@@ -742,6 +821,60 @@ document.getElementById('err-delete-all').addEventListener('click', () => {
   showToast('전체 삭제됨');
 });
 
+// --- Error Filter ---
+const filterState = { server: 'ALL', type: 'ALL', date: 'ALL' };
+
+function applyFilter() {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - 7);
+
+  errorElements.forEach((div, key) => {
+    const serverId = key.split('::')[0];
+    const errorType = div.querySelector('.error-key')?.textContent || '';
+    const timeEl = div.querySelector('.error-timestamps span');
+    const timeText = timeEl?.textContent || '';
+
+    let show = true;
+    if (filterState.server !== 'ALL' && serverId !== filterState.server) show = false;
+    if (filterState.type !== 'ALL' && !errorType.includes(filterState.type)) show = false;
+    if (filterState.date !== 'ALL' && timeText) {
+      const today = new Date();
+      const parts = timeText.match(/(\d+):(\d+):(\d+)/);
+      if (parts) {
+        const errorTime = new Date(today.getFullYear(), today.getMonth(), today.getDate(), +parts[1], +parts[2], +parts[3]);
+        if (filterState.date === 'TODAY' && errorTime < todayStart) show = false;
+        if (filterState.date === 'WEEK' && errorTime < weekStart) show = false;
+      }
+    }
+
+    div.style.display = show ? '' : 'none';
+  });
+}
+
+document.getElementById('filter-server').addEventListener('change', (e) => {
+  filterState.server = e.target.value;
+  applyFilter();
+});
+document.getElementById('filter-type').addEventListener('change', (e) => {
+  filterState.type = e.target.value;
+  applyFilter();
+});
+document.getElementById('filter-date').addEventListener('change', (e) => {
+  filterState.date = e.target.value;
+  applyFilter();
+});
+document.getElementById('filter-reset').addEventListener('click', () => {
+  filterState.server = 'ALL';
+  filterState.type = 'ALL';
+  filterState.date = 'ALL';
+  document.getElementById('filter-server').value = 'ALL';
+  document.getElementById('filter-type').value = 'ALL';
+  document.getElementById('filter-date').value = 'ALL';
+  applyFilter();
+});
+
 // --- Toast ---
 function showToast(message, duration = 3000) {
   const toast = document.getElementById('toast');
@@ -770,6 +903,14 @@ window.devmonitor.onServersInit((srvList) => {
   }
   renderTabs();
   updateConnectionStatus();
+  // 필터 서버 드롭다운 채우기
+  const serverSelect = document.getElementById('filter-server');
+  srvList.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name;
+    serverSelect.appendChild(opt);
+  });
 });
 
 function escapeHtml(str) {
@@ -883,7 +1024,40 @@ function getTodayErrorCount(serverId) {
   return count;
 }
 
+// --- Platform-aware placeholders ---
+function applyPlatformPlaceholders() {
+  const isMac = window.devmonitor && window.devmonitor.platform === 'darwin';
+  const ph = isMac ? {
+    pem: '/Users/yourname/.ssh/server.pem',
+    localPath: '/Users/yourname/projects/backend',
+    projectPath: '/Users/yourname/projects/myapp',
+    buildCmd: './mvnw clean package -DskipTests',
+    buildDir: '/Users/yourname/projects/myapp/backend',
+    buildJar: '/Users/yourname/projects/myapp/backend/target/app.jar',
+    gitDir: '/Users/yourname/projects/myapp'
+  } : {
+    pem: 'C:/Users/yourname/.ssh/server.pem',
+    localPath: 'C:/Users/yourname/projects/backend',
+    projectPath: 'C:\\Projects\\myapp',
+    buildCmd: '.\\mvnw.cmd clean package -DskipTests',
+    buildDir: 'C:\\Projects\\myapp\\backend',
+    buildJar: 'C:\\...\\target\\demo-0.0.1-SNAPSHOT.jar',
+    gitDir: 'C:\\Projects\\myapp'
+  };
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.placeholder = val; };
+  set('tab-srv-pem', ph.pem);
+  set('tab-srv-local', ph.localPath);
+  set('settings-project-path', ph.projectPath);
+  set('settings-build-command', ph.buildCmd);
+  set('settings-build-dir', ph.buildDir);
+  set('settings-build-jar', ph.buildJar);
+  set('settings-git-dir', ph.gitDir);
+
+}
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
   initTerminals();
+  applyPlatformPlaceholders();
 });
