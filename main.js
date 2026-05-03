@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, Notification, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -52,7 +52,6 @@ function loadConfig() {
 }
 
 function migrateConfig(cfg) {
-  // Migrate old single-server format to servers array
   if (cfg.ec2_ip && !cfg.servers) {
     cfg.servers = [{
       id: 'server1',
@@ -63,10 +62,7 @@ function migrateConfig(cfg) {
       port: cfg.port || 22,
       log_path: cfg.log_path || ''
     }];
-    // project_path를 최상위로 이전
-    if (!cfg.project_path) {
-      cfg.project_path = cfg.project_path || '';
-    }
+    if (!cfg.project_path) cfg.project_path = '';
     delete cfg.pem_key_path;
     delete cfg.ec2_ip;
     delete cfg.username;
@@ -74,31 +70,27 @@ function migrateConfig(cfg) {
     delete cfg.log_path;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
   }
-
-  // Ensure servers array exists
-  if (!cfg.servers) {
-    cfg.servers = [];
-  }
-
-  // Migrate: servers[].local_path → top-level project_path
+  if (!cfg.servers) cfg.servers = [];
   if (!cfg.project_path) {
     const firstWithPath = cfg.servers.find(s => s.local_path);
     cfg.project_path = firstWithPath ? firstWithPath.local_path : '';
   }
-  // Remove local_path from all servers
-  for (const s of cfg.servers) {
-    delete s.local_path;
-  }
+  for (const s of cfg.servers) delete s.local_path;
+  if (!cfg.project_path) cfg.project_path = '';
 
-  // Ensure project_path exists
-  if (!cfg.project_path) {
-    cfg.project_path = '';
-  }
+  if (!cfg.build) cfg.build = {};
+  cfg.build.os = cfg.build.os || 'windows';
+  cfg.build.deploy_mode = cfg.build.deploy_mode || 'direct';
+  cfg.build.command = cfg.build.command || '';
+  cfg.build.work_dir = cfg.build.work_dir || '';
+  cfg.build.jar_path = cfg.build.jar_path || '';
+  cfg.build.deploy_server_id = cfg.build.deploy_server_id || '';
+  cfg.build.ec2_restart_cmd = cfg.build.ec2_restart_cmd || '';
+  cfg.build.git_work_dir = cfg.build.git_work_dir || '';
 
-  // Ensure build config exists
-  if (!cfg.build) {
-    cfg.build = { command: '', work_dir: '', jar_path: '' };
-  }
+  if (!cfg.auto_report) cfg.auto_report = {};
+  cfg.auto_report.enabled = cfg.auto_report.enabled !== undefined ? cfg.auto_report.enabled : false;
+  cfg.auto_report.interval_hours = cfg.auto_report.interval_hours || 24;
 
   return cfg;
 }
@@ -113,9 +105,7 @@ function validateServer(server) {
   if (!server.id || !/^[a-z0-9-]+$/.test(server.id)) {
     errors.push('ID는 영문 소문자, 숫자, 하이픈만 허용됩니다');
   }
-  if (!server.name) {
-    errors.push('서버 이름은 필수입니다');
-  }
+  if (!server.name) errors.push('서버 이름은 필수입니다');
   if (server.pem_key_path && !fs.existsSync(server.pem_key_path)) {
     errors.push('PEM 파일이 존재하지 않습니다: ' + server.pem_key_path);
   }
@@ -139,7 +129,6 @@ function findFileRecursive(dir, fileName) {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        // Skip node_modules, .git, build dirs
         if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'target' || entry.name === 'build') continue;
         const found = findFileRecursive(fullPath, fileName);
         if (found) return found;
@@ -147,36 +136,39 @@ function findFileRecursive(dir, fileName) {
         return fullPath;
       }
     }
-  } catch (e) {
-    // Permission error or deleted dir
-  }
+  } catch (e) {}
   return null;
 }
 
 // --- Helper: get VSCode command path ---
 function getVSCodeCommand() {
-  const vscodePath = 'C:\\Users\\bill5\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code';
-  if (process.platform === 'win32' && fs.existsSync(vscodePath)) {
-    return vscodePath;
+  if (process.platform === 'darwin') {
+    // Mac: 일반적인 VS Code 설치 경로
+    const macPath = '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code';
+    if (fs.existsSync(macPath)) return macPath;
+    return 'code'; // PATH에 code가 등록된 경우
   }
-  return 'code';
+  if (process.platform === 'win32') {
+    // Windows: 사용자별 설치 경로 순서대로 탐색
+    const candidates = [
+      path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'bin', 'code'),
+      'C:\\Program Files\\Microsoft VS Code\\bin\\code',
+      'C:\\Program Files (x86)\\Microsoft VS Code\\bin\\code'
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return 'code'; // PATH fallback
 }
 
 // --- Helper: Claude Code deny rules ---
 const DENY_RULES = [
-  "Bash(rm:*)",
-  "Bash(rm -rf:*)",
-  "Bash(sudo:*)",
-  "Bash(systemctl stop:*)",
-  "Bash(systemctl restart:*)",
-  "Bash(scp:*)",
-  "Bash(sftp:*)",
-  "Bash(ssh:*)",
-  "Bash(curl -X POST:*)",
-  "Bash(curl -X DELETE:*)",
-  "Bash(curl -X PUT:*)"
+  "Bash(rm:*)", "Bash(rm -rf:*)", "Bash(sudo:*)",
+  "Bash(systemctl stop:*)", "Bash(systemctl restart:*)",
+  "Bash(scp:*)", "Bash(sftp:*)", "Bash(ssh:*)",
+  "Bash(curl -X POST:*)", "Bash(curl -X DELETE:*)", "Bash(curl -X PUT:*)"
 ];
-
 const CLAUDE_SETTINGS_PATH = path.join(__dirname, '.claude', 'settings.local.json');
 
 function installDenyRules() {
@@ -187,20 +179,12 @@ function installDenyRules() {
     if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
       settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
     }
-  } catch (e) {
-    settings = {};
-  }
-
+  } catch (e) { settings = {}; }
   if (!settings.permissions) settings.permissions = {};
   if (!Array.isArray(settings.permissions.deny)) settings.permissions.deny = [];
-
-  // 중복 제거하며 병합
   const existing = new Set(settings.permissions.deny);
-  for (const rule of DENY_RULES) {
-    existing.add(rule);
-  }
+  for (const rule of DENY_RULES) existing.add(rule);
   settings.permissions.deny = [...existing];
-
   fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8');
   return { success: true, count: settings.permissions.deny.length };
 }
@@ -216,27 +200,40 @@ function getDenyRulesStatus() {
   return { installed: false, count: 0 };
 }
 
+// --- Auto Analysis Report ---
+let autoReportTimer = null;
+
+function runAutoReport() {
+  // 통계 대시보드 방식으로 전환 — Claude Code 분석 없이 새로고침 이벤트만 브로드캐스트
+  const { BrowserWindow: _BW } = require('electron');
+  for (const win of _BW.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('report:stats-refresh');
+  }
+}
+
+function resetAutoReportTimer() {
+  if (autoReportTimer) { clearInterval(autoReportTimer); autoReportTimer = null; }
+  if (config && config.auto_report && config.auto_report.enabled) {
+    const intervalMs = ((config.auto_report.interval_hours) || 24) * 3600 * 1000;
+    autoReportTimer = setInterval(runAutoReport, intervalMs);
+  }
+}
+
 // --- IPC Handlers ---
 function setupIPC() {
-  // Config
   ipcMain.handle('config:load', () => config);
-  ipcMain.handle('config:save', (_, cfg) => {
-    saveConfig(cfg);
-    return { success: true };
-  });
+  ipcMain.handle('config:save', (_, cfg) => { saveConfig(cfg); return { success: true }; });
 
-  // Safety: deny rules
   ipcMain.handle('safety:install-deny-rules', () => installDenyRules());
   ipcMain.handle('safety:get-deny-rules-status', () => getDenyRulesStatus());
 
-  // Build
   ipcMain.handle('build:get-config', () => config.build || {});
   ipcMain.handle('build:save-config', (_, buildCfg) => {
     config.build = buildCfg;
     saveConfig(config);
     return { success: true };
   });
-  // Diagnostics exec
+
   ipcMain.handle('diag:exec', async (_, { serverId, command }) => {
     return new Promise((resolve) => {
       if (!sshManager) return resolve({ output: '연결 없음', error: true });
@@ -246,44 +243,144 @@ function setupIPC() {
     });
   });
 
-  ipcMain.on('build:start', () => {
+  ipcMain.on('build:start', async () => {
     const b = config.build;
-    if (!b || !b.command || !b.work_dir) {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('build:log', '[DevMonitor] 빌드 설정이 없습니다. 설정에서 빌드 명령을 입력해주세요.\r\n');
+    let buildLog = '';
+    const send = (event, data) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(event, data);
+    };
+    const log = (msg) => { buildLog += msg; send('build:log', msg); };
+    const saveDeploy = (status) => {
+      if (errorDB) {
+        const server = config.servers.find(s => s.id === b.deploy_server_id);
+        errorDB.insertDeploy(
+          b.deploy_server_id || 'N/A',
+          server ? server.name : 'N/A',
+          b.deploy_mode || 'direct',
+          b.os || 'windows',
+          status,
+          buildLog
+        );
       }
+    };
+
+    if (!b.command || !b.work_dir) {
+      log('[DevMonitor] 빌드 설정이 없습니다.\r\n');
       return;
     }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('build:log', `\r\n[DevMonitor] 빌드 시작: ${b.command}\r\n`);
-      mainWindow.webContents.send('build:status', 'running');
+
+    const isWin = b.os !== 'mac';
+    const shell = isWin ? 'cmd.exe' : 'sh';
+    const shellArgs = (cmd) => isWin ? ['/c', cmd] : ['-c', cmd];
+
+    log(`\r\n[DevMonitor] 빌드 시작 (${isWin ? 'Windows' : 'Mac'}): ${b.command}\r\n`);
+    send('build:status', 'running');
+
+    const buildResult = await new Promise((resolve) => {
+      const child = require('child_process').spawn(shell, shellArgs(b.command), {
+        cwd: b.work_dir, windowsHide: true
+      });
+      child.stdout.on('data', d => log(d.toString('utf8').replace(/\n/g, '\r\n')));
+      child.stderr.on('data', d => log(d.toString('utf8').replace(/\n/g, '\r\n')));
+      child.on('close', code => resolve(code));
+    });
+
+    if (buildResult !== 0) {
+      log(`\r\n[DevMonitor] ❌ 빌드 실패 (exit ${buildResult})\r\n`);
+      send('build:status', 'failed');
+      saveDeploy('failed');
+      return;
     }
-    const child = require('child_process').spawn(
-      'cmd.exe', ['/c', b.command],
-      { cwd: b.work_dir, windowsHide: true }
-    );
-    child.stdout.on('data', (d) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('build:log', d.toString('utf8').replace(/\n/g, '\r\n'));
+    log('\r\n[DevMonitor] ✅ 빌드 성공\r\n');
+
+    if (b.deploy_mode === 'github') {
+      const gitDir = b.git_work_dir || b.work_dir;
+      log('\r\n[DevMonitor] 🚀 GitHub Actions 배포: git push 실행\r\n');
+      const gitResult = await new Promise((resolve) => {
+        const child = require('child_process').spawn(shell, shellArgs('git push'), {
+          cwd: gitDir, windowsHide: true
+        });
+        child.stdout.on('data', d => log(d.toString('utf8').replace(/\n/g, '\r\n')));
+        child.stderr.on('data', d => log(d.toString('utf8').replace(/\n/g, '\r\n')));
+        child.on('close', code => resolve(code));
+      });
+      if (gitResult === 0) {
+        log('\r\n[DevMonitor] ✅ git push 완료 — GitHub Actions 진행 중\r\n');
+        send('build:status', 'success');
+        saveDeploy('success');
+      } else {
+        log('\r\n[DevMonitor] ❌ git push 실패\r\n');
+        send('build:status', 'failed');
+        saveDeploy('failed');
       }
-    });
-    child.stderr.on('data', (d) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('build:log', d.toString('utf8').replace(/\n/g, '\r\n'));
+    } else {
+      // 직접 전송: SFTP + EC2 재시작
+      const server = config.servers.find(s => s.id === b.deploy_server_id);
+      if (!server) {
+        log('\r\n[DevMonitor] ❌ 배포 대상 서버를 찾을 수 없습니다.\r\n');
+        send('build:status', 'failed');
+        saveDeploy('failed');
+        return;
       }
-    });
-    child.on('close', (code) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const msg = code === 0
-          ? '\r\n[DevMonitor] \u2705 빌드 성공\r\n'
-          : `\r\n[DevMonitor] \u274C 빌드 실패 (exit ${code})\r\n`;
-        mainWindow.webContents.send('build:log', msg);
-        mainWindow.webContents.send('build:status', code === 0 ? 'success' : 'failed');
+      if (!b.jar_path) {
+        log('\r\n[DevMonitor] ❌ jar 경로가 설정되지 않았습니다.\r\n');
+        send('build:status', 'failed');
+        saveDeploy('failed');
+        return;
       }
-    });
+
+      const remoteJarPath = `/home/${server.username || 'ec2-user'}/app/app.jar`;
+      log(`\r\n[DevMonitor] 📦 jar 전송 중 (SFTP)... → ${server.ec2_ip}:${remoteJarPath}\r\n`);
+
+      const scpResult = await new Promise((resolve) => {
+        if (!sshManager) { resolve(false); return; }
+        sshManager.sftpUpload(server, b.jar_path, remoteJarPath, (transferred, total) => {
+          const pct = Math.round((transferred / total) * 100);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('build:log', `\r[DevMonitor] 전송 중... ${pct}%`);
+          }
+        })
+          .then(() => resolve(true))
+          .catch((e) => {
+            log(`\r\n[DevMonitor] SFTP 오류: ${e.message}\r\n`);
+            resolve(false);
+          });
+      });
+
+      if (!scpResult) {
+        log('\r\n[DevMonitor] ❌ jar 전송 실패\r\n');
+        send('build:status', 'failed');
+        saveDeploy('failed');
+        return;
+      }
+      log('\r\n[DevMonitor] ✅ jar 전송 완료\r\n');
+
+      if (b.ec2_restart_cmd) {
+        log(`\r\n[DevMonitor] 🔄 EC2 재시작: ${b.ec2_restart_cmd}\r\n`);
+        // 시스템 ssh 대신 ssh2로 재시작 — Windows/Mac 공통 동작
+        const restartResult = await new Promise((resolve) => {
+          if (!sshManager) { resolve(false); return; }
+          sshManager.diagExec(server.id, b.ec2_restart_cmd, (output, err) => {
+            if (output) log(output.replace(/\n/g, '\r\n'));
+            resolve(!err);
+          });
+        });
+        if (restartResult) {
+          log('\r\n[DevMonitor] ✅ 재시작 완료\r\n');
+          send('build:status', 'success');
+          saveDeploy('success');
+        } else {
+          log('\r\n[DevMonitor] ❌ 재시작 실패 (서버 연결 확인)\r\n');
+          send('build:status', 'failed');
+          saveDeploy('failed');
+        }
+      } else {
+        send('build:status', 'success');
+        saveDeploy('success');
+      }
+    }
   });
 
-  // Project path
   ipcMain.handle('config:set-project-path', (_, projectPath) => {
     if (!config) config = { servers: [], project_path: '' };
     config.project_path = projectPath;
@@ -291,81 +388,47 @@ function setupIPC() {
     return { success: true, project_path: config.project_path };
   });
 
-  // Server CRUD
   ipcMain.handle('server:add', (_, server) => {
     if (!config) config = { servers: [] };
     const errors = validateServer(server);
     if (errors.length > 0) return { success: false, errors };
-
-    // Check duplicate ID
     if (config.servers.some(s => s.id === server.id)) {
       return { success: false, errors: ['이미 존재하는 서버 ID입니다: ' + server.id] };
     }
-
     config.servers.push(server);
     saveConfig(config);
-
-    // Connect the new server
     connectSingleServer(server);
-
     return { success: true, servers: config.servers };
   });
 
   ipcMain.handle('server:update', (_, server) => {
     const errors = validateServer(server);
     if (errors.length > 0) return { success: false, errors };
-
     const idx = config.servers.findIndex(s => s.id === server.id);
     if (idx === -1) return { success: false, errors: ['서버를 찾을 수 없습니다'] };
-
     config.servers[idx] = server;
     saveConfig(config);
-
-    // Reconnect the updated server
     if (sshManager) {
       sshManager.disconnectServer(server.id);
       connectSingleServer(server);
     }
-
     return { success: true, servers: config.servers };
   });
 
   ipcMain.handle('server:delete', (_, serverId) => {
-    // Disconnect SSH first
-    if (sshManager) {
-      sshManager.disconnectServer(serverId);
-    }
-
+    if (sshManager) sshManager.disconnectServer(serverId);
     config.servers = config.servers.filter(s => s.id !== serverId);
     saveConfig(config);
-
     return { success: true, servers: config.servers };
   });
 
-  // Tab switch
-  ipcMain.on('tab:switch', (_, serverId) => {
-    activeTabServerId = serverId;
-  });
+  ipcMain.on('tab:switch', (_, serverId) => { activeTabServerId = serverId; });
+  ipcMain.on('mode:set', (_, mode) => { currentMode = mode; });
+  ipcMain.on('notification:toggle', (_, enabled) => { notificationsEnabled = enabled; });
 
-  // Mode
-  ipcMain.on('mode:set', (_, mode) => {
-    currentMode = mode;
-  });
+  ipcMain.on('pty:write', (_, data) => { if (ptyManager) ptyManager.write(data); });
+  ipcMain.on('pty:resize', (_, { cols, rows }) => { if (ptyManager) ptyManager.resize(cols, rows); });
 
-  // Notification toggle
-  ipcMain.on('notification:toggle', (_, enabled) => {
-    notificationsEnabled = enabled;
-  });
-
-  // PTY
-  ipcMain.on('pty:write', (_, data) => {
-    if (ptyManager) ptyManager.write(data);
-  });
-  ipcMain.on('pty:resize', (_, { cols, rows }) => {
-    if (ptyManager) ptyManager.resize(cols, rows);
-  });
-
-  // SSH btop input - now with serverId
   ipcMain.on('ssh-btop:write', (_, { serverId, data }) => {
     if (sshManager) sshManager.writeBtop(serverId, data);
   });
@@ -373,105 +436,93 @@ function setupIPC() {
     if (sshManager) sshManager.resizeBtop(serverId, cols, rows);
   });
 
-  // Error resolve - compositeKey is "serverId::errorKey"
   ipcMain.on('error:resolve', (_, compositeKey) => {
     console.log('[Resolve] compositeKey:', compositeKey);
-
-    // 1. errorDetector.groups에서 조회, 없으면 DB에서 조회
-    let file = null;
-    let line = null;
-    let serverId = null;
-    let errorKey = null;
+    let file = null, line = null, serverId = null, errorKey = null;
 
     if (errorDetector) {
       const group = errorDetector.groups.get(compositeKey);
-      console.log('[Resolve] group from detector:', group);
-      if (group) {
-        file = group.file;
-        line = group.line;
-        serverId = group.serverId;
-        errorKey = group.errorKey;
-      }
+      if (group) { file = group.file; line = group.line; serverId = group.serverId; errorKey = group.errorKey; }
     }
-
     if (!file && errorDB) {
       const row = errorDB.getByCompositeKey(compositeKey);
-      console.log('[Resolve] row from DB:', row);
       if (row && row.file_location) {
         const parts = row.file_location.split(':');
-        file = parts[0];
-        line = parts[1] || '0';
-        serverId = row.server_id;
-        errorKey = row.error_key;
+        file = parts[0]; line = parts[1] || '0'; serverId = row.server_id; errorKey = row.error_key;
       }
     }
 
-    // 2. file이 unknown이거나 line이 0이면 VSCode 안 열기
     if (!file || file === 'unknown' || file === 'frontend' || !line || line === '0') {
-      console.log('[Resolve] 파일 위치를 특정할 수 없음:', file, line);
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('app:status', {
-          type: 'info',
-          message: '파일 위치를 특정할 수 없습니다'
-        });
+        mainWindow.webContents.send('app:status', { type: 'info', message: '파일 위치를 특정할 수 없습니다' });
       }
     } else {
-      // 3. project_path 하위 재귀 탐색 후 VSCode 열기
       const projectPath = config && config.project_path ? config.project_path : '';
       const foundPath = projectPath ? findFileRecursive(projectPath, file) : null;
-      console.log('[Resolve] filePath:', foundPath);
       if (foundPath) {
         const codeCmd = getVSCodeCommand();
-        const cmd = `"${codeCmd}" -g "${foundPath}:${line}"`;
-        console.log('[Resolve] opening VSCode:', cmd);
-        require('child_process').exec(cmd, (err) => {
+        require('child_process').exec(`"${codeCmd}" -g "${foundPath}:${line}"`, (err) => {
           if (err) console.error('[Resolve] exec error:', err);
         });
       }
     }
 
-    // DB에서 resolved 마킹
-    if (errorDB && serverId && errorKey) {
-      errorDB.resolve(serverId, errorKey);
-    }
+    if (errorDB && serverId && errorKey) errorDB.resolve(serverId, errorKey);
   });
 
-  // Error unresolve
   ipcMain.on('error:unresolve', (_, compositeKey) => {
     if (!errorDB) return;
     const parts = compositeKey.split('::');
     if (parts.length === 2) errorDB.unresolve(parts[0], parts[1]);
   });
 
-  // Error delete
   ipcMain.on('error:delete', (_, compositeKeys) => {
     if (!errorDB) return;
-    if (compositeKeys === 'ALL') {
-      errorDB.deleteAll();
-    } else {
-      errorDB.deleteMany(compositeKeys);
-    }
+    if (compositeKeys === 'ALL') errorDB.deleteAll();
+    else errorDB.deleteMany(compositeKeys);
   });
 
-  // Error history
   ipcMain.handle('error:get-history', () => {
     if (errorDB) return errorDB.getAll();
     return [];
+  });
+
+  ipcMain.handle('deploy:get-history', () => {
+    if (errorDB) return errorDB.getAllDeploys();
+    return [];
+  });
+
+  // Analysis reports / 통계 대시보드
+  ipcMain.handle('report:get-all', () => {
+    if (errorDB) return errorDB.getAllReports();
+    return [];
+  });
+  ipcMain.handle('report:get-config', () => {
+    return (config && config.auto_report) || { enabled: false, interval_hours: 24 };
+  });
+  ipcMain.handle('report:save-config', (_, cfg) => {
+    if (!config) config = { servers: [] };
+    config.auto_report = cfg;
+    saveConfig(config);
+    resetAutoReportTimer();
+    return { success: true };
+  });
+  ipcMain.on('report:run-now', () => runAutoReport());
+  ipcMain.handle('report:get-stats', (_, modifier) => {
+    if (errorDB) return errorDB.getStats(modifier);
+    return null;
   });
 }
 
 // --- SSH connection helpers ---
 function connectSingleServer(server) {
   if (!sshManager) return;
-
   sshManager.connectServer(
     server,
-    // onLogData
     (serverId, data) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('ssh-log:data', serverId, data);
       }
-      // Feed to error detector - always, regardless of active tab
       if (errorDetector) {
         const srv = config.servers.find(s => s.id === serverId);
         const serverName = srv ? srv.name : serverId;
@@ -480,13 +531,11 @@ function connectSingleServer(server) {
         });
       }
     },
-    // onBtopData
     (serverId, data) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('ssh-btop:data', serverId, data);
       }
     },
-    // onStatus
     (serverId, sector, status) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('ssh:status', serverId, sector, status);
@@ -499,7 +548,6 @@ function connectSingleServer(server) {
 function initializeConnections() {
   if (!config || !config.servers || config.servers.length === 0) return;
 
-  // PTY (Sector 1) - start with project_path
   const firstServer = config.servers[0];
   const initialPath = config.project_path || null;
 
@@ -513,17 +561,21 @@ function initializeConnections() {
         mainWindow.webContents.send('pty:data', data);
       }
     });
-
     ptyManager.setAnalysisCallback((errorKey, analysis) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('error:analysis', { key: errorKey, analysis });
       }
-      // Parse compositeKey to get serverId and errorKey for DB
       if (errorDB) {
         const parts = errorKey.split('::');
-        if (parts.length === 2) {
-          errorDB.updateAnalysis(parts[0], parts[1], analysis);
-        }
+        if (parts.length === 2) errorDB.updateAnalysis(parts[0], parts[1], analysis);
+      }
+    });
+    ptyManager.setReportAnalysisCallback((analysis) => {
+      console.log('[Report] Claude 분석 캡처됨, 길이:', analysis.length, analysis.substring(0, 80));
+      if (errorDB) errorDB.updateReportAnalysis(analysis);
+      const { BrowserWindow: _BWR } = require('electron');
+      for (const win of _BWR.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('report:analysis-updated', { analysis });
       }
     });
   } catch (e) {
@@ -536,15 +588,11 @@ function initializeConnections() {
     }
   }
 
-  // SSH (Sectors 2 & 3) - connect all servers
   try {
     const SSHManager = require('./ssh');
     if (sshManager) sshManager.dispose();
     sshManager = new SSHManager();
-
-    for (const server of config.servers) {
-      connectSingleServer(server);
-    }
+    for (const server of config.servers) connectSingleServer(server);
   } catch (e) {
     console.error('SSH 모듈 로드 실패:', e.message);
   }
@@ -555,22 +603,15 @@ function onNewError(compositeKey, group) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('error:detected', { key: compositeKey, group });
   }
-
-  // Save to DB
   if (errorDB) {
     errorDB.upsert(
-      group.serverId,
-      group.serverName,
-      group.errorKey,
-      group.errorType,
-      group.file ? `${group.file}:${group.line}` : null
+      group.serverId, group.serverName, group.errorKey,
+      group.errorType, group.file ? `${group.file}:${group.line}` : null
     );
   }
 
-  // Find the server for this error
   const server = config ? config.servers.find(s => s.id === group.serverId) : null;
 
-  // Mode A: clipboard copy + Claude 터미널에 텍스트 입력 (엔터 없음)
   if (currentMode === 'A') {
     const text = group.rawText || `${group.errorType} @ ${group.file}:${group.line}`;
     clipboard.writeText(text);
@@ -578,18 +619,14 @@ function onNewError(compositeKey, group) {
       mainWindow.webContents.send('clipboard:copy', compositeKey);
     }
     const errorPrompt = `다음 서버 에러를 분석하고 수정 방안을 제시해줘 (코드 수정은 하지 마): ${text}`;
-    if (ptyManager) {
-      ptyManager.injectWithoutEnter(errorPrompt);
-    }
+    if (ptyManager) ptyManager.injectWithoutEnter(errorPrompt);
   }
 
-  // Mode B: auto-inject into PTY with context switch
   if (currentMode === 'B' && ptyManager && server) {
     const prompt = `다음 서버 에러를 분석하고 코드를 수정해줘: ${group.rawText || group.errorType + ' @ ' + group.file + ':' + group.line}`;
     ptyManager.switchContext(server, prompt, compositeKey);
   }
 
-  // Notification
   if (notificationsEnabled && Notification.isSupported()) {
     new Notification({
       title: `DevMonitor - ${group.serverName || '에러 감지'}`,
@@ -602,9 +639,7 @@ function onUpdateError(compositeKey, group) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('error:updated', { key: compositeKey, group });
   }
-  if (errorDB) {
-    errorDB.updateCount(group.serverId, group.errorKey);
-  }
+  if (errorDB) errorDB.updateCount(group.serverId, group.errorKey);
 }
 
 function onFloodWarning() {
@@ -619,10 +654,7 @@ function onFloodWarning() {
 // --- App lifecycle ---
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1000,
-    minHeight: 600,
+    width: 1400, height: 900, minWidth: 1000, minHeight: 600,
     title: 'DevMonitor',
     backgroundColor: '#1e1e2e',
     webPreferences: {
@@ -631,7 +663,6 @@ function createWindow() {
       contextIsolation: true
     }
   });
-
   mainWindow.loadFile('index.html');
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -642,10 +673,46 @@ app.whenReady().then(() => {
   setupIPC();
   createWindow();
 
-  // Load config (with auto-migration)
-  config = loadConfig();
+  // Menu
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'DevMonitor',
+      submenu: [
+        {
+          label: '배포 이력',
+          click: () => {
+            const win = new BrowserWindow({
+              width: 800, height: 600,
+              title: 'DevMonitor — 배포 이력',
+              webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true }
+            });
+            win.loadFile('deploy-history.html');
+            win.setMenu(null);
+          }
+        },
+        {
+          label: '분석 리포트',
+          click: () => {
+            const win = new BrowserWindow({
+              width: 860, height: 640,
+              title: 'DevMonitor — 분석 리포트',
+              backgroundColor: '#1e1e2e',
+              webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true }
+            });
+            win.loadFile('analysis-report.html');
+            win.setMenu(null);
+          }
+        },
+        { type: 'separator' },
+        { label: '종료', role: 'quit' }
+      ]
+    }
+  ]);
+  Menu.setApplicationMenu(menu);
 
-  // Initialize error detector
+  config = loadConfig();
+  resetAutoReportTimer();
+
   try {
     const ErrorDetector = require('./errorDetector');
     errorDetector = new ErrorDetector(onNewError, onUpdateError, onFloodWarning);
@@ -653,7 +720,6 @@ app.whenReady().then(() => {
     console.error('ErrorDetector 로드 실패:', e.message);
   }
 
-  // Initialize DB
   try {
     const ErrorDB = require('./db');
     errorDB = new ErrorDB();
@@ -661,27 +727,18 @@ app.whenReady().then(() => {
     console.error('DB 초기화 실패:', e.message);
   }
 
-  // If config exists and has servers, start connections
   if (config && config.servers && config.servers.length > 0) {
     activeTabServerId = config.servers[0].id;
     initializeConnections();
   }
 
-  // Notify renderer when ready
   mainWindow.webContents.on('did-finish-load', () => {
     if (!config || !config.servers || config.servers.length === 0) {
-      mainWindow.webContents.send('app:status', {
-        type: 'info',
-        message: 'config-missing'
-      });
+      mainWindow.webContents.send('app:status', { type: 'info', message: 'config-missing' });
     }
-
-    // Send servers list to renderer
     if (config && config.servers) {
       mainWindow.webContents.send('servers:init', config.servers);
     }
-
-    // Send error history
     if (errorDB) {
       const history = errorDB.getAll();
       mainWindow.webContents.send('error:history', history);
@@ -696,10 +753,5 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Rejection:', err);
-});
+process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); });
+process.on('unhandledRejection', (err) => { console.error('Unhandled Rejection:', err); });
