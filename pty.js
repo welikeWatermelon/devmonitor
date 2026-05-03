@@ -18,8 +18,10 @@ class PtyManager {
     this.commandQueue = [];
     this.onDataCallback = null;
     this.onAnalysisCallback = null;
+    this.onReportAnalysisCallback = null;
     this.analysisBuffer = '';
     this.currentErrorKey = null;
+    this.isReportAnalysis = false;
     this.activeClaudeServerId = null;
     this._initialPath = null;
   }
@@ -115,12 +117,21 @@ class PtyManager {
         this.analysisBuffer += data;
         if (this._detectClaudePrompt()) {
           this.state = STATE.CLAUDE_READY;
-          if (this.currentErrorKey && this.onAnalysisCallback) {
-            const analysis = this._extractAnalysis(this.analysisBuffer);
+          // 폴백 타이머 취소
+          if (this._reportFallbackTimer) {
+            clearTimeout(this._reportFallbackTimer);
+            this._reportFallbackTimer = null;
+          }
+          const analysis = this._extractAnalysis(this.analysisBuffer);
+          console.log('[PTY] CLAUDE_BUSY→READY, isReport:', this.isReportAnalysis, 'analysis len:', analysis.length);
+          if (this.isReportAnalysis && this.onReportAnalysisCallback) {
+            this.onReportAnalysisCallback(analysis);
+          } else if (this.currentErrorKey && this.onAnalysisCallback) {
             this.onAnalysisCallback(this.currentErrorKey, analysis);
           }
           this.analysisBuffer = '';
           this.currentErrorKey = null;
+          this.isReportAnalysis = false;
           this.outputBuffer = '';
           this._processQueue();
         }
@@ -153,11 +164,13 @@ class PtyManager {
   }
 
   _detectClaudePrompt() {
-    const lines = this.outputBuffer.split('\n');
+    // ANSI 이스케이프 코드 제거 후 검사 (컬러 프롬프트 대응)
+    const clean = this.outputBuffer.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '').replace(/\r/g, '');
+    const lines = clean.split('\n');
     const lastLines = lines.slice(-3).join('\n');
     return /^>\s*$/m.test(lastLines) ||
-           /\$\s*$/.test(lastLines) ||
-           /❯\s*$/.test(lastLines);
+           /\$\s*$/m.test(lastLines) ||
+           /❯\s*$/m.test(lastLines);
   }
 
   _launchClaude() {
@@ -251,16 +264,42 @@ class PtyManager {
     }
   }
 
-  _executeInjection(text, errorKey) {
+  _executeInjection(text, errorKey, isReport = false) {
     if (!this.process) return;
 
     this.state = STATE.CLAUDE_BUSY;
     this.currentErrorKey = errorKey;
+    this.isReportAnalysis = !!isReport;
     this.analysisBuffer = '';
     this.outputBuffer = '';
 
     const cmd = text + (process.platform === 'win32' ? '\r' : '\n');
     this.process.write(cmd);
+  }
+
+  // Report analysis injection: 분석 결과를 DB에 자동 저장하기 위한 전용 메서드
+  injectReportCommand(text) {
+    if (this.state === STATE.CLAUDE_READY) {
+      this._executeInjection(text, null, true);
+    } else {
+      this.commandQueue.push({ text, errorKey: null, isReport: true });
+    }
+
+    // 60초 폴백: 프롬프트 감지 실패 시 강제 캡처
+    if (this._reportFallbackTimer) clearTimeout(this._reportFallbackTimer);
+    this._reportFallbackTimer = setTimeout(() => {
+      this._reportFallbackTimer = null;
+      if (this.isReportAnalysis && this.state === STATE.CLAUDE_BUSY) {
+        console.log('[PTY] 리포트 분석 폴백 타이머 작동 — 강제 캡처');
+        const analysis = this._extractAnalysis(this.analysisBuffer);
+        if (this.onReportAnalysisCallback) this.onReportAnalysisCallback(analysis);
+        this.isReportAnalysis = false;
+        this.state = STATE.CLAUDE_READY;
+        this.analysisBuffer = '';
+        this.outputBuffer = '';
+        this._processQueue();
+      }
+    }, 60000);
   }
 
   _processQueue() {
@@ -281,7 +320,7 @@ class PtyManager {
       return;
     }
 
-    this._executeInjection(next.text, next.errorKey);
+    this._executeInjection(next.text, next.errorKey, next.isReport);
   }
 
   _extractAnalysis(rawOutput) {
@@ -307,6 +346,10 @@ class PtyManager {
 
   setAnalysisCallback(cb) {
     this.onAnalysisCallback = cb;
+  }
+
+  setReportAnalysisCallback(cb) {
+    this.onReportAnalysisCallback = cb;
   }
 
   resize(cols, rows) {
