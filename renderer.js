@@ -73,29 +73,28 @@ function initTerminals() {
     if (activeServerId) window.devmonitor.writeSshBtop(activeServerId, data);
   });
 
-  // SSH data handlers - route to correct terminal or buffer
+  // SSH data handlers - 모든 서버 로그를 버퍼에 항상 저장 (탭 전환 후 복원 가능)
   window.devmonitor.onSshLogData((serverId, data) => {
+    // 항상 버퍼에 저장
+    if (!logBuffers[serverId]) logBuffers[serverId] = '';
+    logBuffers[serverId] += data;
+    if (logBuffers[serverId].length > 300000) {
+      logBuffers[serverId] = logBuffers[serverId].slice(-150000);
+    }
+    // 현재 active 탭이면 터미널에도 바로 출력
     if (serverId === activeServerId) {
       term2.write(data);
-    } else {
-      if (!logBuffers[serverId]) logBuffers[serverId] = '';
-      logBuffers[serverId] += data;
-      // Cap buffer
-      if (logBuffers[serverId].length > 50000) {
-        logBuffers[serverId] = logBuffers[serverId].slice(-25000);
-      }
     }
   });
 
   window.devmonitor.onSshBtopData((serverId, data) => {
+    if (!btopBuffers[serverId]) btopBuffers[serverId] = '';
+    btopBuffers[serverId] += data;
+    if (btopBuffers[serverId].length > 200000) {
+      btopBuffers[serverId] = btopBuffers[serverId].slice(-100000);
+    }
     if (serverId === activeServerId) {
       term3.write(data);
-    } else {
-      if (!btopBuffers[serverId]) btopBuffers[serverId] = '';
-      btopBuffers[serverId] += data;
-      if (btopBuffers[serverId].length > 50000) {
-        btopBuffers[serverId] = btopBuffers[serverId].slice(-25000);
-      }
     }
   });
 
@@ -132,19 +131,19 @@ function switchTab(serverId) {
   // Save current terminal state is handled by buffers automatically
   activeServerId = serverId;
 
-  // Clear terminals and load buffered data
+  // 터미널 초기화 후 해당 서버의 버퍼 복원 (버퍼는 유지)
   term2.clear();
   term2.reset();
   if (logBuffers[serverId]) {
     term2.write(logBuffers[serverId]);
-    logBuffers[serverId] = '';
+    // 버퍼 유지 — 다음 탭 전환 시에도 재사용
   }
 
   term3.clear();
   term3.reset();
   if (btopBuffers[serverId]) {
     term3.write(btopBuffers[serverId]);
-    btopBuffers[serverId] = '';
+    // 버퍼 유지
   }
 
   // Notify main process
@@ -214,9 +213,9 @@ function renderTabs() {
 function getServerStatus(serverId) {
   const st = serverStatuses[serverId];
   if (!st) return 'disconnected';
-  // Show worst status between log and btop
-  if (st.log === 'connected' && st.btop === 'connected') return 'connected';
-  if (st.log === 'reconnecting' || st.btop === 'reconnecting') return 'reconnecting';
+  // 로그 연결 기준으로 판단 (btop은 선택적 기능)
+  if (st.log === 'connected') return 'connected';
+  if (st.log === 'reconnecting') return 'reconnecting';
   return 'disconnected';
 }
 
@@ -335,7 +334,6 @@ document.getElementById('mode-a').addEventListener('click', () => {
   currentMode = 'A';
   document.getElementById('mode-a').classList.add('active');
   document.getElementById('mode-b').classList.remove('active');
-  document.getElementById('action-btn').textContent = '붙여넣기';
   window.devmonitor.setMode('A');
 });
 
@@ -343,16 +341,7 @@ document.getElementById('mode-b').addEventListener('click', () => {
   currentMode = 'B';
   document.getElementById('mode-b').classList.add('active');
   document.getElementById('mode-a').classList.remove('active');
-  document.getElementById('action-btn').textContent = '분석하기';
   window.devmonitor.setMode('B');
-});
-
-document.getElementById('action-btn').addEventListener('click', () => {
-  if (currentMode === 'A') {
-    term1.focus();
-  } else {
-    showToast('최신 에러를 Claude Code에 전송합니다...');
-  }
 });
 
 // --- Notification Toggle ---
@@ -404,15 +393,6 @@ document.getElementById('settings-btn').addEventListener('click', () => {
         el.style.color = '#f9e2af';
       }
     });
-    // 자동 분석 리포트 설정 로드
-    if (window.devmonitor.getReportConfig) {
-      window.devmonitor.getReportConfig().then(cfg => {
-        const enabledEl = document.getElementById('settings-auto-report-enabled');
-        const hoursEl = document.getElementById('settings-auto-report-hours');
-        if (enabledEl) enabledEl.checked = !!(cfg && cfg.enabled);
-        if (hoursEl) hoursEl.value = (cfg && cfg.interval_hours) || 24;
-      });
-    }
   }
 });
 
@@ -424,26 +404,6 @@ document.getElementById('settings-project-path-save').addEventListener('click', 
   }
 });
 
-// 자동 분석 리포트 설정 저장
-document.getElementById('settings-report-save').addEventListener('click', async () => {
-  const enabled = document.getElementById('settings-auto-report-enabled').checked;
-  const interval_hours = parseInt(document.getElementById('settings-auto-report-hours').value, 10) || 24;
-  if (window.devmonitor.saveReportConfig) {
-    const result = await window.devmonitor.saveReportConfig({ enabled, interval_hours });
-    if (result && result.success) {
-      showToast(enabled
-        ? `자동 분석 활성화 — ${interval_hours}시간마다 실행`
-        : '자동 분석이 비활성화되었습니다');
-    }
-  }
-});
-
-// 자동 분석 완료 토스트
-if (window.devmonitor.onAutoReportDone) {
-  window.devmonitor.onAutoReportDone((data) => {
-    showToast(`📊 자동 분석 완료 — ${data.count}건 에러 집계`);
-  });
-}
 
 document.getElementById('install-deny-rules-btn').addEventListener('click', async () => {
   const result = await window.devmonitor.installDenyRules();
@@ -903,6 +863,10 @@ window.devmonitor.onServersInit((srvList) => {
   }
   renderTabs();
   updateConnectionStatus();
+  // 초기 로드 시 대시보드 자동 갱신
+  if (activeServerId) {
+    setTimeout(() => loadDashboard(activeServerId), 500);
+  }
   // 필터 서버 드롭다운 채우기
   const serverSelect = document.getElementById('filter-server');
   srvList.forEach(s => {
@@ -1053,7 +1017,6 @@ function applyPlatformPlaceholders() {
   set('settings-build-dir', ph.buildDir);
   set('settings-build-jar', ph.buildJar);
   set('settings-git-dir', ph.gitDir);
-
 }
 
 // --- Init ---

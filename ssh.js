@@ -107,6 +107,10 @@ class SSHManager {
       entry.backoff.log = 1000;
       cb.onStatus(server.id, 'log', 'connected');
 
+      // 연결 시점 구분선 — 위쪽은 tail 초기 출력(과거 로그), 아래부터 실시간
+      const now = new Date().toLocaleTimeString('ko-KR');
+      cb.onLogData(server.id, `\r\n\x1b[36m${'─'.repeat(36)} 연결됨 ${now} ${'─'.repeat(36)}\x1b[0m\r\n\r\n`);
+
       const cmd = `tail -F ${server.log_path} 2>&1`;
       entry.logConn.exec(cmd, (err, stream) => {
         if (err) {

@@ -8,6 +8,8 @@ class ErrorDetector {
     this.onUpdateError = onUpdateError;
     this.onFloodWarning = onFloodWarning;
     this.floodWarned = false;
+    this.FLOOD_WINDOW_MS = 30000;  // 30초 윈도우
+    this.FLOOD_THRESHOLD = 5;       // 30초 내 5개 에러 emit 시 폭증으로 판단
 
     // 스택트레이스 수집 상태
     this._collecting = false;
@@ -95,25 +97,7 @@ class ErrorDetector {
   }
 
   processLine(line, serverId, serverName) {
-    const now = Date.now();
-
-    // Rate limit: max 10 per second
-    if (now - this.rateWindowStart > 1000) {
-      this.rateCounter = 0;
-      this.rateWindowStart = now;
-      this.floodWarned = false;
-    }
-
-    if (this.rateCounter >= 10) {
-      if (!this.floodWarned && this.onFloodWarning) {
-        this.onFloodWarning();
-        this.floodWarned = true;
-      }
-      return { dropped: true };
-    }
-    this.rateCounter++;
-
-    // 스택트레이스 수집 중인 경우
+    // 스택트레이스 수집 중인 경우 — rate count 증가 없이 처리
     if (this._collecting) {
       const trimmed = line.trim();
       // 종료 조건: 빈 줄 또는 새 타임스탬프 시작
@@ -168,6 +152,18 @@ class ErrorDetector {
     const compositeKey = `${serverId}::${errorKey}`;
     const timestamp = new Date().toISOString();
     const now = Date.now();
+
+    // 에러 폭증 감지: 30초 윈도우 내 emit 횟수 기준
+    if (now - this.rateWindowStart > this.FLOOD_WINDOW_MS) {
+      this.rateCounter = 0;
+      this.rateWindowStart = now;
+      this.floodWarned = false;
+    }
+    this.rateCounter++;
+    if (this.rateCounter >= this.FLOOD_THRESHOLD && !this.floodWarned && this.onFloodWarning) {
+      this.onFloodWarning();
+      this.floodWarned = true;
+    }
 
     // Debounce: same error group within 30s
     const lastTime = this.lastProcessed.get(compositeKey);

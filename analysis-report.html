@@ -198,7 +198,7 @@
     </div>
     <div class="stat-card blue">
       <div class="val" id="s-servers">—</div>
-      <div class="lbl">서버 수</div>
+      <div class="lbl">에러 발생 서버</div>
     </div>
   </div>
 
@@ -379,10 +379,11 @@
                 padding: 8,
                 generateLabels(chart) {
                   const ds = chart.data.datasets[0];
-                  const total = ds.data.reduce((a, b) => a + b, 0);
                   return chart.data.labels.map((label, i) => ({
                     text: `${label} (${ds.data[i]})`,
                     fillStyle: ds.backgroundColor[i],
+                    strokeStyle: ds.backgroundColor[i],
+                    fontColor: '#cdd6f4',
                     hidden: false,
                     index: i
                   }));

@@ -316,10 +316,10 @@ class ErrorDB {
 
       const summary = this.db.prepare(
         `SELECT
-           count(*) as type_count,
+           count(distinct error_type) as type_count,
            sum(count) as total_count,
-           sum(case when resolved=0 then 1 else 0 end) as unresolved_count,
-           sum(case when resolved=1 then 1 else 0 end) as resolved_count,
+           sum(case when resolved=0 then count else 0 end) as unresolved_count,
+           sum(case when resolved=1 then count else 0 end) as resolved_count,
            count(distinct server_id) as server_count
          FROM error_history
          WHERE last_seen >= datetime('now', 'localtime', '${modifier}')`
