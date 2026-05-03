@@ -51,6 +51,33 @@ class ErrorDB {
       `);
     }
 
+    // Deploy history table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS deploy_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deployed_at DATETIME DEFAULT (datetime('now','localtime')),
+        server_id TEXT,
+        server_name TEXT,
+        deploy_mode TEXT,
+        os TEXT,
+        status TEXT,
+        log TEXT
+      )
+    `);
+
+    // Analysis report table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS analysis_report (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at DATETIME DEFAULT (datetime('now','localtime')),
+        period_start DATETIME,
+        period_end DATETIME,
+        error_count INTEGER,
+        top_errors TEXT,
+        claude_analysis TEXT
+      )
+    `);
+
     // Prepare statements
     this.stmts = {
       upsert: this.db.prepare(`
@@ -86,6 +113,24 @@ class ErrorDB {
       ),
       getUnresolved: this.db.prepare(
         'SELECT * FROM error_history WHERE resolved = 0 ORDER BY last_seen DESC'
+      ),
+      insertDeploy: this.db.prepare(
+        'INSERT INTO deploy_history (server_id, server_name, deploy_mode, os, status, log) VALUES (?, ?, ?, ?, ?, ?)'
+      ),
+      getAllDeploys: this.db.prepare(
+        'SELECT * FROM deploy_history ORDER BY deployed_at DESC LIMIT 100'
+      ),
+      getRecentErrors: this.db.prepare(
+        "SELECT * FROM error_history WHERE last_seen >= datetime('now', 'localtime', ? || ' hours') ORDER BY count DESC"
+      ),
+      insertReport: this.db.prepare(
+        'INSERT INTO analysis_report (period_start, period_end, error_count, top_errors, claude_analysis) VALUES (?, ?, ?, ?, ?)'
+      ),
+      getAllReports: this.db.prepare(
+        'SELECT * FROM analysis_report ORDER BY created_at DESC LIMIT 50'
+      ),
+      updateReportAnalysis: this.db.prepare(
+        'UPDATE analysis_report SET claude_analysis = ? WHERE id = (SELECT MAX(id) FROM analysis_report)'
       )
     };
   }
@@ -184,6 +229,107 @@ class ErrorDB {
   deleteAll() {
     if (!this.db) return;
     try { this.db.exec('DELETE FROM error_history'); } catch (e) {}
+  }
+
+  insertDeploy(serverId, serverName, deployMode, os, status, log) {
+    if (!this.db) return;
+    try { this.stmts.insertDeploy.run(serverId, serverName, deployMode, os, status, log); } catch (e) {}
+  }
+
+  getAllDeploys() {
+    if (!this.db) return [];
+    try { return this.stmts.getAllDeploys.all(); } catch (e) { return []; }
+  }
+
+  getRecentErrors(hours) {
+    if (!this.db) return [];
+    try {
+      // SQLite datetime modifier needs negative offset: '-24 hours'
+      return this.stmts.getRecentErrors.all(`-${hours}`);
+    } catch (e) {
+      console.error('DB getRecentErrors error:', e.message);
+      return [];
+    }
+  }
+
+  insertReport(periodStart, periodEnd, errorCount, topErrors, claudeAnalysis) {
+    if (!this.db) return null;
+    try {
+      const result = this.stmts.insertReport.run(periodStart, periodEnd, errorCount, topErrors, claudeAnalysis);
+      return result.lastInsertRowid;
+    } catch (e) {
+      console.error('DB insertReport error:', e.message);
+      return null;
+    }
+  }
+
+  getAllReports() {
+    if (!this.db) return [];
+    try { return this.stmts.getAllReports.all(); } catch (e) { return []; }
+  }
+
+  updateReportAnalysis(analysis) {
+    if (!this.db) return;
+    try { this.stmts.updateReportAnalysis.run(analysis); } catch (e) {}
+  }
+
+  // --- 에러 통계 대시보드용 ---
+  getStats(modifier) {
+    if (!this.db) return null;
+    // modifier 화이트리스트 검사
+    const allowed = ['-1 day', '-7 days', '-30 days'];
+    if (!allowed.includes(modifier)) return null;
+
+    const isHourly = modifier === '-1 day';
+    const bucketExpr = isHourly
+      ? "strftime('%H', last_seen)"
+      : "strftime('%Y-%m-%d', last_seen)";
+
+    try {
+      const timeSeries = this.db.prepare(
+        `SELECT ${bucketExpr} as bucket, sum(count) as total
+         FROM error_history
+         WHERE last_seen >= datetime('now', 'localtime', '${modifier}')
+         GROUP BY bucket ORDER BY bucket`
+      ).all();
+
+      const typeStats = this.db.prepare(
+        `SELECT error_type, sum(count) as total
+         FROM error_history
+         WHERE last_seen >= datetime('now', 'localtime', '${modifier}')
+         GROUP BY error_type ORDER BY total DESC LIMIT 8`
+      ).all();
+
+      const serverStats = this.db.prepare(
+        `SELECT server_name, sum(count) as total
+         FROM error_history
+         WHERE last_seen >= datetime('now', 'localtime', '${modifier}')
+         GROUP BY server_id ORDER BY total DESC`
+      ).all();
+
+      const resRows = this.db.prepare(
+        `SELECT resolved, sum(count) as total
+         FROM error_history
+         WHERE last_seen >= datetime('now', 'localtime', '${modifier}')
+         GROUP BY resolved`
+      ).all();
+
+      const summary = this.db.prepare(
+        `SELECT
+           count(*) as type_count,
+           sum(count) as total_count,
+           sum(case when resolved=0 then 1 else 0 end) as unresolved_count,
+           sum(case when resolved=1 then 1 else 0 end) as resolved_count,
+           count(distinct server_id) as server_count
+         FROM error_history
+         WHERE last_seen >= datetime('now', 'localtime', '${modifier}')`
+      ).get();
+
+      return { timeSeries, typeStats, serverStats, resRows, summary, isHourly };
+    } catch (e) {
+      console.error('DB getStats error:', e.message);
+      return null;
+    }
   }
 
   close() {
